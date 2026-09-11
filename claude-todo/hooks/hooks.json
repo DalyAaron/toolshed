@@ -1,0 +1,27 @@
+{
+  "description": "/todo reminders: resurface open todos after a compact or resume, and nudge about them at a configurable cadence.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/skills/todo/todo.py hook-resurface",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/skills/todo/todo.py hook-nudge",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

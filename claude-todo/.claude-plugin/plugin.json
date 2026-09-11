@@ -1,0 +1,20 @@
+{
+  "name": "claude-todo",
+  "displayName": "/todo",
+  "version": "1.0.0",
+  "description": "Park an idea mid-task without derailing what you're doing. Captures the branch, commit and files you were editing, and brings the todo back to you later.",
+  "author": {
+    "name": "Aaron Daly"
+  },
+  "homepage": "https://github.com/dalyaaron/toolshed/tree/main/claude-todo",
+  "license": "MIT",
+  "keywords": [
+    "todo",
+    "notes",
+    "productivity",
+    "workflow",
+    "reminders"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

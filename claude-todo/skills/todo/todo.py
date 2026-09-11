@@ -1,0 +1,1200 @@
+#!/usr/bin/env python3
+"""Session-scoped todo store for the /todo skill.
+
+One JSON file per Claude Code session, keyed by CLAUDE_CODE_SESSION_ID, under
+$CLAUDE_CONFIG_DIR/todos/<project-slug>/<session-id>.json
+
+The script is the only writer. The skill body and the hooks are both readers of
+the same schema, so nothing has to hand-write JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Callable
+
+REMINDER_MODES = ("turns", "minutes", "session", "off")
+
+SETTINGS: dict[str, tuple[object, str, str]] = {
+    # key: (default, accepted values, what it controls)
+    "reminder_mode": (
+        "turns", " | ".join(REMINDER_MODES),
+        "When Claude may raise open todos. 'session' only at session start or "
+        "resume; 'off' never, though /todo still works on demand.",
+    ),
+    "nudge_every_turns": (
+        3, "whole number, 0+",
+        "Prompts that must pass between reminders, in 'turns' mode.",
+    ),
+    "nudge_every_minutes": (
+        15, "whole number, 0+",
+        "Minutes that must pass between reminders, in 'minutes' mode.",
+    ),
+    "max_surfaces_per_todo": (
+        2, "whole number, 0+",
+        "Times one todo is raised before it goes quiet until you ask. 0 never raises it.",
+    ),
+    "max_nudge_items": (
+        3, "whole number, 0+",
+        "Most todos listed in a single reminder.",
+    ),
+    "carryover_days": (
+        7, "whole number, 0+",
+        "How far back a new session looks for unfinished todos in this project.",
+    ),
+    "dedupe_threshold": (
+        0.6, "0.0 - 1.0",
+        "Word overlap at which a new todo merges into an existing one instead of "
+        "being added. Higher means fewer merges.",
+    ),
+    "focus_file_count": (
+        3, "whole number, 0+",
+        "Most 'files you were editing' recorded on a todo.",
+    ),
+    "focus_window_minutes": (
+        30, "whole number, 0+",
+        "How recently a dirty file must have changed to count as one you were editing.",
+    ),
+}
+
+DEFAULTS = {key: spec[0] for key, spec in SETTINGS.items()}
+
+STOPWORDS = {
+    "a", "an", "the", "to", "for", "of", "in", "on", "and", "or", "is", "it",
+    "we", "i", "that", "this", "should", "need", "needs", "add", "also", "be",
+}
+
+
+# ---------------------------------------------------------------- paths / state
+
+def project_root() -> str:
+    """The project a todo belongs to.
+
+    CLAUDE_PROJECT_DIR is deliberately NOT consulted. Claude Code sets it for
+    hook processes but not for the environment the skill's capture runs in, so
+    honouring it made the writer and the reader disagree whenever a session
+    started in a subdirectory or a worktree: capture succeeded, then the hooks
+    read a different directory and reminders silently never fired.
+
+    git toplevel is identical from anywhere inside a checkout, so both agree.
+    A worktree has its own toplevel and therefore its own parking lot, which is
+    intended — a worktree is usually a separate piece of work.
+    """
+    top = _git("rev-parse", "--show-toplevel").strip()
+    if top:
+        return top
+    return str(Path.cwd().resolve())
+
+
+def slug(path: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", path)
+
+
+def config_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+
+
+def store_base() -> Path:
+    """Root of this profile's todo store."""
+    override = os.environ.get("CLAUDE_TODO_DIR")
+    return Path(override) if override else config_dir() / "todos"
+
+
+def config_path() -> Path:
+    """Config is per profile, alongside the per-project todo directories."""
+    return store_base() / "config.json"
+
+
+def todo_dir(root: str) -> Path:
+    """Per-profile store, keyed by project.
+
+    CLAUDE_CONFIG_DIR identifies the profile (.claude, .claude-ag1,
+    .claude-me), so todos parked under one profile are not visible from
+    another. That separation is intentional: a profile is a distinct working
+    context. Set CLAUDE_TODO_DIR to point every profile at one shared store.
+    """
+    return store_base() / slug(root)
+
+
+def coerce(key: str, raw: object) -> object:
+    """Validate and type a config value, raising ValueError with a usable message."""
+    default = DEFAULTS[key]
+    if key == "reminder_mode":
+        value = str(raw).strip().lower()
+        if value not in REMINDER_MODES:
+            raise ValueError(f"reminder_mode must be one of: {', '.join(REMINDER_MODES)}")
+        return value
+    if isinstance(default, float):
+        value = float(raw)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{key} must be between 0.0 and 1.0")
+        return value
+    value = int(raw)
+    if value < 0:
+        raise ValueError(f"{key} must be 0 or greater")
+    return value
+
+
+def load_config() -> tuple[dict, dict]:
+    """Effective config plus where each value came from.
+
+    Precedence: environment (CLAUDE_TODO_<KEY>) > config.json > default.
+    """
+    values = dict(DEFAULTS)
+    sources = {k: "default" for k in DEFAULTS}
+
+    path = config_path()
+    if path.exists():
+        try:
+            stored = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            stored = {}
+        for key, raw in (stored or {}).items():
+            if key in DEFAULTS:
+                try:
+                    values[key], sources[key] = coerce(key, raw), "config.json"
+                except (ValueError, TypeError):
+                    pass  # a bad stored value must not break reminders
+
+    for key in DEFAULTS:
+        env = os.environ.get("CLAUDE_TODO_" + key.upper())
+        if env is not None:
+            try:
+                values[key], sources[key] = coerce(key, env), "env"
+            except (ValueError, TypeError):
+                pass
+
+    return values, sources
+
+
+_CFG: tuple[dict, dict] | None = None
+
+
+def cfg() -> dict:
+    global _CFG
+    if _CFG is None:
+        _CFG = load_config()
+    return _CFG[0]
+
+
+def cfg_sources() -> dict:
+    cfg()
+    return _CFG[1]
+
+
+def session_id(explicit: str | None = None) -> str:
+    return explicit or os.environ.get("CLAUDE_CODE_SESSION_ID") or "no-session"
+
+
+def state_path(sid: str, root: str) -> Path:
+    return todo_dir(root) / f"{sid}.json"
+
+
+def load(path: Path, sid: str, root: str) -> dict:
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {
+        "session_id": sid,
+        "project": root,
+        "created": now(),
+        "muted": False,
+        "turns": 0,
+        "last_nudge_turn": 0,
+        "last_nudge_at": time.time(),
+        "next_id": 1,
+        "todos": [],
+    }
+
+
+def save(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, path)  # atomic; a fast double-/todo can't clobber
+
+
+def now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# ------------------------------------------------------------- ambient context
+
+def _git(*args: str) -> str:
+    try:
+        out = subprocess.run(
+            ("git",) + args, capture_output=True, text=True, timeout=5
+        )
+        # rstrip newlines only: `git status --porcelain` encodes status in the
+        # first two columns, so a leading space is significant data.
+        return out.stdout.rstrip("\n") if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def dirty_files() -> tuple[list[str], "Callable[[str], float]"]:
+    """Dirty paths (most recently modified first) plus the mtime lookup used to
+    order them, so callers can filter on recency without re-stat'ing."""
+    porcelain = _git("status", "--porcelain")
+    files = []
+    for line in porcelain.splitlines():
+        if len(line) > 3:
+            files.append(line[3:].strip().split(" -> ")[-1])
+
+    root = Path(project_root())
+
+    def mtime(path: str) -> float:
+        try:
+            return (root / path).stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return sorted(files, key=mtime, reverse=True)[:8], mtime
+
+
+def focus_files() -> list[str]:
+    """The few files being actively edited right now.
+
+    A repo can sit with a dozen dirty files for days, so plain dirtiness says
+    nothing about attention. Only recently-touched ones do — and the recency
+    window matters: without it this always returns focus_file_count files, so
+    long-stale paths would leak in and produce false "warm" matches.
+    """
+    files, mtime = dirty_files()
+    conf = cfg()
+    cutoff = time.time() - conf["focus_window_minutes"] * 60
+    return [f for f in files if mtime(f) >= cutoff][:conf["focus_file_count"]]
+
+
+def capture_context() -> dict:
+    dirty, _ = dirty_files()
+    return {
+        "focus_files": focus_files(),
+        "branch": _git("rev-parse", "--abbrev-ref", "HEAD").strip(),
+        "sha": _git("rev-parse", "--short", "HEAD").strip(),
+        "diff_stat": _git("diff", "--shortstat").strip(),
+        "dirty_files": dirty,
+        "cwd": str(Path.cwd()),
+    }
+
+
+# ------------------------------------------------------------ dedupe / locality
+
+def tokens(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9_]+", text.lower())
+    return {w for w in words if w not in STOPWORDS} or set(words)
+
+
+def similarity(a: str, b: str) -> float:
+    ta, tb = tokens(a), tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def subject_outside_repo(todo: dict) -> bool:
+    """True when the todo's recorded subject is a path outside its capture repo.
+
+    The git context and the staleness signal both describe the repo you were in.
+    When the subject lives elsewhere, they describe where you were standing, not
+    what the todo is about, so they must not be presented as evidence about it.
+    """
+    subject = todo.get("about") or ""
+    if not subject.startswith(("/", "~")):
+        return False
+    project = todo.get("cwd") or ""
+    return bool(project) and not str(Path(subject).expanduser()).startswith(project)
+
+
+def is_warm(todo: dict, current_focus: list[str]) -> bool:
+    """True when the todo was captured while editing something still in focus."""
+    return bool(set(todo.get("focus_files") or []) & set(current_focus))
+
+
+def clusters(items: list[dict]) -> dict[str, list[dict]]:
+    """Group todos captured while editing the same file."""
+    by_file: dict[str, list[dict]] = {}
+    for todo in items:
+        for path in todo.get("focus_files") or []:
+            by_file.setdefault(path, []).append(todo)
+    return {p: g for p, g in by_file.items() if len(g) > 1}
+
+
+def open_todos(state: dict) -> list[dict]:
+    return [t for t in state["todos"] if t["status"] == "open"]
+
+
+# ----------------------------------------------------------------- rendering
+
+def render(todo: dict, current: list[str], verbose: bool = False) -> str:
+    shared = sorted(set(todo.get("focus_files") or []) & set(current))
+    warm = f" [warm: {shared[0]}]" if shared else ""
+    line = f"  #{todo['id']} {todo['text']}{warm}"
+    if todo.get("mentions", 1) > 1:
+        line += f" (raised {todo['mentions']}x)"
+    if not verbose:
+        return line
+    bits = []
+    if todo.get("about"):
+        marker = "   (outside the repo this was captured in)" if subject_outside_repo(todo) else ""
+        bits.append(f"      about: {todo['about']}{marker}")
+    if todo.get("detail"):
+        bits.append(f"      detail: {todo['detail']}")
+    if todo.get("note"):
+        bits.append(f"      why: {todo['note']}")
+    where = " ".join(x for x in [todo.get("branch"), todo.get("sha")] if x)
+    if where:
+        bits.append(f"      captured on: {where} at {todo.get('created', '?')}")
+    if todo.get("focus_files"):
+        bits.append(f"      you were editing: {', '.join(todo['focus_files'])}")
+    if todo.get("diff_stat"):
+        bits.append(f"      diff then: {todo['diff_stat']}")
+    return "\n".join([line] + bits)
+
+
+# ------------------------------------------------------------------- commands
+
+def cmd_add(state: dict, text: str) -> str:
+    text = " ".join(text.split())
+    current = open_todos(state)
+    for existing in current:
+        if similarity(text, existing["text"]) >= cfg()["dedupe_threshold"]:
+            existing["mentions"] = existing.get("mentions", 1) + 1
+            existing.update(capture_context())
+            return (
+                f"MERGED into existing todo #{existing['id']}: {existing['text']}\n"
+                f"(raised {existing['mentions']}x — context refreshed, no duplicate created)"
+            )
+
+    todo = {
+        "id": state["next_id"],
+        "text": text,
+        "status": "open",
+        "created": now(),
+        "mentions": 1,
+        "surfaced": 0,
+        "note": None,
+        "done_at": None,
+    }
+    todo.update(capture_context())
+    state["todos"].append(todo)
+    state["next_id"] += 1
+
+    n = len(open_todos(state))
+    lines = [f"SAVED todo #{todo['id']}: {todo['text']}"]
+    if todo["branch"] or todo["dirty_files"]:
+        # omitted entirely outside a git repo, rather than printing "context:  @  "
+        where = " @ ".join(x for x in (todo["branch"], todo["sha"]) if x)
+        dirty = ", ".join(todo["dirty_files"]) or "none"
+        lines.append(f"context: {where} | dirty: {dirty}")
+    lines.append(f"{n} open todo(s) in this session.")
+    return "\n".join(lines)
+
+
+def cmd_list(state: dict) -> str:
+    current = focus_files()
+    items = open_todos(state)
+    if not items:
+        return "No open todos in this session."
+    out = [f"{len(items)} open todo(s) in this session:"]
+    out += [render(t, current, verbose=True) for t in items]
+    grouped = clusters(items)
+    if grouped:
+        path, group = max(grouped.items(), key=lambda kv: len(kv[1]))
+        ids = ", ".join(f"#{t['id']}" for t in group)
+        out.append(
+            f"\nLocality: {ids} were captured while editing {path} — "
+            f"cheaper to do together than to reload that context twice."
+        )
+    if state.get("muted"):
+        out.append("\n(reminders are muted for this session)")
+    return "\n".join(out)
+
+
+def cmd_next(state: dict, target: str | None = None,
+             detail: str | None = None) -> str:
+    current = focus_files()
+    items = open_todos(state)
+    if not items:
+        return "No open todos in this session."
+
+    if target is not None:
+        tid = int(target)
+        picked = [t for t in items if t["id"] == tid]
+        if not picked:
+            # record nothing when the lookup failed
+            ids = ", ".join(f"#{t['id']}" for t in items)
+            return f"No open todo #{tid}. Open: {ids}."
+        pick = picked[0]
+        if detail:
+            extra = " ".join(detail.split())
+            pick["detail"] = f"{pick['detail']}; {extra}" if pick.get("detail") else extra
+    else:
+        items.sort(key=lambda t: (not is_warm(t, current), -t.get("mentions", 1), t["id"]))
+        pick = items[0]
+    stale = ""
+    if subject_outside_repo(pick):
+        stale = (
+            "\nNOTE: this todo's subject is outside the repo it was captured in, so the "
+            "branch and file context above describe where the idea occurred, not what it "
+            "is about. Work from `about:` and `why:`."
+        )
+    elif pick.get("focus_files") and not is_warm(pick, current):
+        stale = (
+            "\nSTALENESS CHECK: you are no longer editing the files this was captured "
+            "against — verify it is still needed before starting."
+        )
+    return f"NEXT todo:\n{render(pick, current, verbose=True)}{stale}"
+
+
+def cmd_resolve(state: dict, ident: str, status: str) -> str:
+    try:
+        tid = int(ident)
+    except ValueError:
+        return f"'{ident}' is not a todo id."
+    for todo in state["todos"]:
+        if todo["id"] == tid and todo["status"] == "open":
+            todo["status"] = status
+            todo["done_at"] = now()
+            verb = "Completed" if status == "done" else "Dropped"
+            n = len(open_todos(state))
+            return f"{verb} #{tid}: {todo['text']}\n{n} open todo(s) left."
+    return f"No open todo #{tid}."
+
+
+def cmd_help() -> str:
+    """The full usage reference. Paths are resolved, not illustrative."""
+    skill = Path(__file__).resolve().parent
+    store = store_base()
+    try:
+        # list what is actually installed, not what a full checkout would have
+        present = ", ".join(sorted(
+            f.name for f in skill.iterdir() if f.is_file() and not f.name.startswith(".")
+        ))
+    except OSError:
+        present = "todo.py"
+    return f"""HELP: /todo — park an idea without losing your place
+
+CAPTURE
+  /todo <idea>          Park it. The write happens before Claude reads anything,
+                        so it cannot derail what you were doing. Records the
+                        branch, commit, diff stat and the files you were just
+                        editing. A near-duplicate of an existing todo merges
+                        into it (marked "raised Nx") instead of adding a second.
+
+REVIEW
+  /todo                 This session's open todos, with the context each was
+                        captured in. A [warm: file] marker means it was parked
+                        while you were editing something you still are.
+  /todo list            Same as bare /todo.
+  /todo sessions        Other sessions of this repo holding open todos,
+                        including sibling worktrees. Grouped as s1, s2, … for
+                        `adopt`.
+
+DO
+  /todo next            Start the top todo. Ones touching files you are already
+                        editing come first; ties break toward older ids.
+  /todo 4               Start #4 specifically. `/todo next 4` is identical.
+  /todo 4 <detail>      Start #4 and attach scope for this run — e.g.
+  /todo next 4 <detail> "/todo 7 update it with what changed this session".
+                        The detail is kept on the todo, so it survives an
+                        interruption; a second one appends rather than replaces.
+                        A bare number followed by text starts that todo only if
+                        it is open, so "/todo 404 handler needs a test" still
+                        parks an idea. `next 4 <detail>` is always explicit.
+  /todo done 4          Mark #4 complete.
+  /todo drop 4          Discard #4.
+
+EDIT
+  /todo edit 4          Change #4 a field at a time — text, why, subject,
+                        status — each step offering a proposed value you can
+                        accept or overtype. `/todo edit` alone asks which todo.
+                        Editing keeps the id and the captured git context; that
+                        context is deliberately not editable, because it records
+                        where the idea occurred rather than what it is about.
+
+MERGE
+  /todo adopt           Numbered list of todos held by other sessions.
+  /todo adopt 3         Move that one into this session.
+  /todo adopt s2        Move everything from source s2 (see /todo sessions).
+  /todo adopt all       Move every adoptable todo in.
+                        Adopting *moves* a todo, so it can never be resolved in
+                        two places, and anything duplicating a todo already here
+                        merges rather than arriving as a twin.
+
+REMINDERS
+  /todo mute            Stop reminders for this session.
+  /todo unmute          Resume them.
+  /todo config          Every setting: current value, where it came from, the
+                        values it accepts, and what it controls.
+  /todo config <k>      Just that one, with its description.
+  /todo config <k> <v>  Change one. Takes effect on your next prompt.
+                        reminder_mode: turns | minutes | session | off
+                        Open todos survive a compaction or resume, and a new
+                        session surfaces anything still open from the last week.
+
+HELP
+  /todo help            This reference.
+
+ANYTHING ELSE becomes a new todo. A subcommand has to match the whole argument,
+which is what keeps these as ideas rather than commands:
+  /todo next steps: add tests for the helpers
+  /todo edit the retry logic
+  /todo 404 handler needs a test
+An id that does not exist reports the open ids instead of parking itself.
+
+FILES
+  {skill}/
+      {present}
+  {store}/
+      <project>/<session>.json   your todos, one file per session
+      config.json                settings, once you change one"""
+
+
+def cmd_edit(state: dict, target: str | None = None) -> str:
+    """Read a todo out for editing. The writer is `todo.py set`."""
+    items = [t for t in state["todos"] if t["status"] == "open"]
+    if not items:
+        return "No open todos in this session to edit."
+
+    if target is None:
+        lines = ["EDIT: which todo? Open todos:"]
+        lines += [f"  #{t['id']} {t['text']}" for t in items]
+        lines += ["", "Ask which one, then run `/todo edit <n>`."]
+        return "\n".join(lines)
+
+    tid = int(target)
+    picked = [t for t in items if t["id"] == tid]
+    if not picked:
+        ids = ", ".join(f"#{t['id']}" for t in items)
+        return f"No open todo #{tid}. Open: {ids}."
+
+    todo = picked[0]
+    where = " ".join(x for x in (todo.get("branch"), todo.get("sha")) if x)
+    return "\n".join([
+        f"EDIT todo #{tid} — current values:",
+        f"  text   {todo['text']}",
+        f"  detail {todo.get('detail') or '(empty)'}",
+        f"  why    {todo.get('note') or '(empty)'}",
+        f"  about  {todo.get('about') or '(empty)'}",
+        f"  status {todo['status']}",
+        "",
+        f"Captured on {where or 'no git context'} at {todo.get('created', '?')} — "
+        "not editable; it records where the idea occurred, not what it is about.",
+    ])
+
+
+def cmd_set(state: dict, ident: str, fields: dict[str, str]) -> str:
+    """Apply edits gathered from the user. An empty value clears a field."""
+    try:
+        tid = int(ident)
+    except ValueError:
+        return f"'{ident}' is not a todo id."
+
+    for todo in state["todos"]:
+        if todo["id"] != tid:
+            continue
+        changed = []
+        if "text" in fields:
+            value = " ".join(fields["text"].split())
+            if not value:
+                return "text cannot be empty — use `/todo drop` to discard a todo."
+            if value != todo["text"]:
+                todo["text"] = value
+                changed.append("text")
+        for flag, key in (("why", "note"), ("about", "about"), ("detail", "detail")):
+            if flag in fields:
+                value = " ".join(fields[flag].split()) or None
+                if value != todo.get(key):
+                    todo[key] = value
+                    changed.append(flag if value else f"{flag} (cleared)")
+        if "status" in fields:
+            value = fields["status"].strip().lower()
+            value = "dropped" if value == "drop" else value
+            if value not in ("open", "done", "dropped"):
+                return f"status must be open, done or dropped (got {fields['status']!r})."
+            if value != todo["status"]:
+                todo["status"] = value
+                todo["done_at"] = None if value == "open" else now()
+                changed.append(f"status -> {value}")
+        if not changed:
+            return f"Nothing changed on #{tid}."
+        return f"Updated #{tid} ({', '.join(changed)}):\n  {todo['text']}"
+    return f"No todo #{tid}."
+
+
+def parse_flags(argv: list[str], names: set[str]) -> dict[str, str]:
+    """Collect `--flag value...` pairs, tolerating unquoted multi-word values."""
+    found: dict[str, str] = {}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token.startswith("--") and token[2:] in names:
+            key = token[2:]
+            i += 1
+            parts = []
+            while i < len(argv) and not (argv[i].startswith("--") and argv[i][2:] in names):
+                parts.append(argv[i])
+                i += 1
+            found[key] = " ".join(parts)
+        else:
+            i += 1
+    return found
+
+
+def cmd_mute(state: dict, muted: bool) -> str:
+    state["muted"] = muted
+    return "Reminders muted for this session." if muted else "Reminders re-enabled."
+
+
+def cmd_annotate(state: dict, ident: str, note: str,
+                 about: str | None = None) -> str:
+    """Attach conversational context, and optionally the concrete thing meant.
+
+    `about` exists because prose hedges. When the conversation makes the
+    referent unambiguous ("the readme" -> a specific file), recording it as a
+    field means `/todo next` doesn't have to re-derive it from a sentence.
+    """
+    try:
+        tid = int(ident)
+    except ValueError:
+        return f"'{ident}' is not a todo id."
+    for todo in state["todos"]:
+        if todo["id"] == tid:
+            if note:
+                todo["note"] = " ".join(note.split())
+            if about:
+                todo["about"] = " ".join(about.split())
+            what = " and subject" if about and note else " subject" if about else " context"
+            return f"Noted{what} on #{tid}."
+    return f"No todo #{tid}."
+
+
+_MAIN_SLUG: dict[str, str] = {}
+
+
+def main_repo_slug(root: str) -> str:
+    """Slug of this repo's main checkout — the same for every worktree of it."""
+    if root not in _MAIN_SLUG:
+        common = _git("rev-parse", "--git-common-dir").strip()
+        if common:
+            path = Path(common)
+            main = (path if path.is_absolute() else Path(root) / path).resolve().parent
+            _MAIN_SLUG[root] = slug(str(main))
+        else:
+            _MAIN_SLUG[root] = ""
+    return _MAIN_SLUG[root]
+
+
+def store_label(directory: Path, root: str) -> str:
+    """Short human name for a store dir, relative to the repo's main checkout."""
+    base = main_repo_slug(root)
+    if not base:
+        return directory.name
+    if directory.name == base:
+        return "main checkout"
+    if directory.name.startswith(base):
+        tail = directory.name[len(base):].lstrip("-")
+        for junk in ("claude-worktrees-", "worktrees-"):
+            if tail.startswith(junk):
+                tail = tail[len(junk):]
+        return f"worktree {tail}" if tail else directory.name
+    return directory.name
+
+
+def sibling_stores(root: str) -> list[Path]:
+    """Store dirs for other checkouts of the same repo (i.e. its worktrees).
+
+    Each worktree keys to its own project, which is intended for automatic
+    reminders. But when a worktree's work lands you usually want its parked
+    ideas in the main checkout, so explicit merge commands look here too.
+    """
+    own = todo_dir(root)
+    prefix = main_repo_slug(root)
+    if not prefix:
+        return [own]
+    base = store_base()
+    if not base.is_dir():
+        return [own]
+    try:
+        others = sorted(d for d in base.iterdir()
+                        if d.is_dir() and d.name.startswith(prefix) and d != own)
+    except OSError:
+        others = []
+    return [own] + others
+
+
+def carryover_candidates(root: str, sid: str,
+                         include_siblings: bool = False) -> list[tuple[Path, dict]]:
+    """Open todos from other recent sessions, newest file first then by id.
+
+    The ordering is deterministic so the numbering `/todo adopt` prints stays
+    stable between listing it and acting on it.
+    """
+    directories = sibling_stores(root) if include_siblings else [todo_dir(root)]
+    cutoff = time.time() - cfg()["carryover_days"] * 86400
+
+    files: list[Path] = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        try:
+            files += [f for f in directory.glob("*.json")
+                      if f.stem != sid and f.stat().st_mtime >= cutoff]
+        except OSError:
+            continue
+    files.sort(key=lambda p: (-p.stat().st_mtime, p.name))
+
+    found: list[tuple[Path, dict]] = []
+    for f in files:
+        try:
+            other = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if other.get("muted"):
+            continue
+        for todo in sorted(open_todos(other), key=lambda t: t["id"]):
+            found.append((f, todo))
+    return found
+
+
+def source_label(path: Path, root: str) -> str:
+    """How a source session is described: id, plus its project when elsewhere."""
+    label = f"session {path.stem[:8]}"
+    if path.parent != todo_dir(root):
+        label += f" ({store_label(path.parent, root)})"
+    return label
+
+
+def _move_one(state: dict, path: Path, todo: dict) -> str | None:
+    """Close a todo in its source session and bring it into this one.
+
+    Returns a description of what happened, or None if it was already gone.
+    """
+    try:
+        source = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    for entry in source.get("todos", []):
+        if entry["id"] == todo["id"] and entry["status"] == "open":
+            entry["status"] = "adopted"
+            entry["done_at"] = now()
+            entry["adopted_by"] = state["session_id"]
+            break
+    else:
+        return None
+    save(path, source)
+
+    # merging shouldn't create twins of something already parked here
+    for existing in open_todos(state):
+        if similarity(todo["text"], existing["text"]) >= cfg()["dedupe_threshold"]:
+            existing["mentions"] = existing.get("mentions", 1) + todo.get("mentions", 1)
+            return f"merged into #{existing['id']}: {existing['text']}"
+
+    moved = dict(todo)
+    moved.update({
+        "id": state["next_id"],
+        "status": "open",
+        "surfaced": 0,
+        "adopted_from": path.stem,
+    })
+    state["todos"].append(moved)
+    state["next_id"] += 1
+    return f"#{moved['id']}: {moved['text']}"
+
+
+def _sources(candidates: list[tuple[Path, dict]]) -> list[Path]:
+    """Distinct source files, in the order they appear in candidates."""
+    order: list[Path] = []
+    for path, _ in candidates:
+        if path not in order:
+            order.append(path)
+    return order
+
+
+def cmd_sessions(state: dict) -> str:
+    root, sid = project_root(), state["session_id"]
+    candidates = carryover_candidates(root, sid, include_siblings=True)
+    if not candidates:
+        return "No other sessions hold open todos for this repo."
+
+    lines = ["Other sessions with open todos:"]
+    for i, path in enumerate(_sources(candidates), 1):
+        items = [t for p, t in candidates if p == path]
+        lines.append(f"  s{i}  {source_label(path, root)} — {len(items)} open")
+        for todo in items:
+            lines.append(f"        {todo['text']}")
+    lines += [
+        "",
+        "`/todo adopt s<n>` merges one session's todos into this one;",
+        "`/todo adopt` numbers them individually; `/todo adopt all` takes everything.",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_adopt(state: dict, target: str | None = None) -> str:
+    root, sid = project_root(), state["session_id"]
+    candidates = carryover_candidates(root, sid, include_siblings=True)
+    if not candidates:
+        return "Nothing to adopt — no open todos in other recent sessions of this repo."
+
+    if target is None:
+        lines = ["Adoptable todos from other sessions:"]
+        for i, (path, todo) in enumerate(candidates, 1):
+            lines.append(f"  {i}. {todo['text']}  ({source_label(path, root)})")
+        lines += [
+            "",
+            "`/todo adopt <n>` moves one in, `/todo adopt all` moves all,",
+            "`/todo sessions` groups them by session for `/todo adopt s<n>`.",
+        ]
+        return "\n".join(lines)
+
+    target = target.lower()
+    if target == "all":
+        chosen, what = candidates, f"all {len(candidates)} todo(s)"
+    elif target.startswith("s"):
+        order = _sources(candidates)
+        index = int(target[1:])
+        if not 1 <= index <= len(order):
+            return f"No source s{index}. `/todo sessions` lists {len(order)}."
+        picked = order[index - 1]
+        chosen = [(p, t) for p, t in candidates if p == picked]
+        what = f"{len(chosen)} todo(s) from {source_label(picked, root)}"
+    else:
+        index = int(target)
+        if not 1 <= index <= len(candidates):
+            return f"No candidate {index}. `/todo adopt` lists {len(candidates)}."
+        chosen, what = [candidates[index - 1]], None
+
+    results = [r for r in (_move_one(state, p, t) for p, t in chosen) if r]
+    if not results:
+        return "Those todos are no longer open in their source sessions — run `/todo adopt` again."
+    if what is None:
+        return f"Adopted {results[0]}"
+    lines = [f"Adopted {what}:"] + [f"  {r}" for r in results]
+    if len(results) < len(chosen):
+        lines.append(f"  ({len(chosen) - len(results)} skipped — no longer open at the source)")
+    return "\n".join(lines)
+
+
+def wrap_doc(doc: str, indent: int, width: int = 74) -> list[str]:
+    """Wrap a setting's description under its aligned column."""
+    pad = " " * (indent + 4)
+    out, line = [], pad
+    for word in doc.split():
+        if len(line) + len(word) + 1 > width and line != pad:
+            out.append(line)
+            line = pad + word
+        else:
+            line = f"{line} {word}" if line != pad else pad + word
+    if line != pad:
+        out.append(line)
+    return out
+
+
+def cmd_config(key: str | None = None, raw: str | None = None) -> str:
+    values, sources = cfg(), cfg_sources()
+
+    if key and raw is not None:
+        try:
+            value = coerce(key, raw)
+        except (ValueError, TypeError) as exc:
+            return f"Invalid value for {key}: {exc}"
+        path = config_path()
+        stored = {}
+        if path.exists():
+            try:
+                stored = json.loads(path.read_text()) or {}
+            except (json.JSONDecodeError, OSError):
+                stored = {}
+        stored[key] = value
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(stored, indent=2) + "\n")
+        os.replace(tmp, path)
+        note = ""
+        if sources.get(key) == "env":
+            note = f"\nNOTE: CLAUDE_TODO_{key.upper()} is set and still overrides this."
+        return (
+            f"Set {key} = {value} in {path}\n"
+            f"Takes effect on the next prompt — each hook run reloads the config."
+            f"{note}"
+        )
+
+    if key:
+        _, accepts, doc = SETTINGS[key]
+        return "\n".join([
+            f"CONFIG: {key} = {values[key]!r}  (from {sources[key]})",
+            f"  accepts: {accepts}",
+            f"  {doc}",
+            f"  set with: /todo config {key} <value>",
+        ])
+
+    width = max(len(k) for k in SETTINGS)
+    lines = [f"CONFIG: {len(SETTINGS)} settings for /todo, this profile", ""]
+    for name, (_, accepts, doc) in SETTINGS.items():
+        marker = "" if sources[name] == "default" else f"   <- {sources[name]}"
+        lines.append(f"  {name:<{width}}  {values[name]!r}{marker}")
+        lines.append(f"  {'':<{width}}  accepts {accepts}")
+        for line in wrap_doc(doc, width):
+            lines.append(line)
+        lines.append("")
+    path = config_path()
+    lines += [
+        f"file: {path} ({'exists' if path.exists() else 'not created yet'})",
+        "set:  /todo config <key> <value>       one key: /todo config <key>",
+        "env:  CLAUDE_TODO_<KEY> overrides the file for one session",
+    ]
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------------- hook paths
+
+def emit(event: str, context: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": context,
+        }
+    }))
+
+
+REMINDER_FRAME = (
+    "Open /todo items the user parked earlier in this session. This is a passive "
+    "reminder: mention them in one short line only if the current work has reached "
+    "a natural stopping point, and do NOT start working on them unless the user asks."
+)
+
+
+def hook_nudge(payload: dict) -> None:
+    """UserPromptSubmit: throttled nudge, cadence set by reminder_mode."""
+    conf = cfg()
+    if conf["reminder_mode"] in ("off", "session"):
+        return  # no mid-session nudges in these modes
+
+    root = project_root()
+    sid = session_id(payload.get("session_id"))
+    path = state_path(sid, root)
+    if not path.exists():
+        return  # fast path: this session never used /todo
+
+    state = load(path, sid, root)
+    state["turns"] = state.get("turns", 0) + 1
+    now_ts = time.time()
+    # seed the clock so a fresh store doesn't fire immediately in minutes mode
+    state.setdefault("last_nudge_at", now_ts)
+    items = open_todos(state)
+
+    def bail() -> None:
+        save(path, state)
+
+    if state.get("muted") or not items:
+        return bail()
+
+    if conf["reminder_mode"] == "minutes":
+        if now_ts - state["last_nudge_at"] < conf["nudge_every_minutes"] * 60:
+            return bail()
+    else:
+        if state["turns"] - state.get("last_nudge_turn", 0) < conf["nudge_every_turns"]:
+            return bail()
+
+    eligible = [t for t in items if t.get("surfaced", 0) < conf["max_surfaces_per_todo"]]
+    if not eligible:
+        return bail()
+
+    current = focus_files()
+    shown = eligible[:conf["max_nudge_items"]]
+    for todo in shown:
+        todo["surfaced"] = todo.get("surfaced", 0) + 1
+    state["last_nudge_turn"] = state["turns"]
+    state["last_nudge_at"] = now_ts
+    save(path, state)
+
+    body = "\n".join(render(t, current) for t in shown)
+    emit("UserPromptSubmit", f"{REMINDER_FRAME}\n\n{body}\n\n(`/todo` lists them, `/todo next` starts one.)")
+
+
+def hook_resurface(payload: dict) -> None:
+    """SessionStart: re-inject open todos after compact/resume, or carry over on startup."""
+    if cfg()["reminder_mode"] == "off":
+        return
+
+    root = project_root()
+    sid = session_id(payload.get("session_id"))
+    source = payload.get("source", "startup")
+    path = state_path(sid, root)
+
+    if path.exists():
+        state = load(path, sid, root)
+        items = open_todos(state)
+        if items and not state.get("muted"):
+            current = focus_files()
+            body = "\n".join(render(t, current, verbose=True) for t in items)
+            emit("SessionStart", (
+                f"{REMINDER_FRAME} They survived a `{source}`, so the conversation "
+                f"detail around them may be gone.\n\n{body}\n\n"
+                "(`/todo` lists them, `/todo next` starts one.)"
+            ))
+            return
+
+    if source not in ("startup", "clear"):
+        return
+
+    # automatic carry-over stays within this project; `/todo adopt` looks wider
+    carried = carryover_candidates(root, sid)
+    if not carried:
+        return
+
+    lines = [
+        f"  {todo['text']} — parked {todo.get('created', '?')} on "
+        f"{todo.get('branch') or 'unknown branch'} ({source_label(p, root)})"
+        for p, todo in carried[:5]
+    ]
+    emit("SessionStart", (
+        f"The user left {len(carried)} unfinished /todo item(s) from earlier sessions in "
+        f"this project. Passive reminder only — surface them in one short line if "
+        f"relevant, and do not act on them unless asked. `/todo adopt` moves one into "
+        f"this session so it can be acted on.\n\n" + "\n".join(lines)
+    ))
+
+
+# ------------------------------------------------------------------- dispatch
+
+_CFG_KEYS = "|".join(sorted(DEFAULTS, key=len, reverse=True))
+
+SUBCOMMANDS = re.compile(
+    rf"""^(?:
+        (?P<list>list)
+      | next \s+ (?P<next_id>\d+) (?: \s+ (?P<next_detail>.+) )?
+      | (?P<next>next)
+      | (?P<pick>\d+) (?: \s+ (?P<pick_detail>.+) )?
+      | (?P<mute>mute)
+      | (?P<unmute>unmute)
+      | (?P<resolve>done|drop) \s+ (?P<resolve_id>\d+)
+      | (?P<config>config) (?: \s+ (?P<cfg_key>{_CFG_KEYS}) (?: \s+ (?P<cfg_val>\S+) )? )?
+      | (?P<help>help)
+      | (?P<edit>edit) (?: \s+ (?P<edit_id>\d+) )?
+      | (?P<sessions>sessions)
+      | (?P<adopt>adopt) (?: \s+ (?P<adopt_id>\d+|all|s\d+) )?
+    )$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def dispatch(raw: str) -> str:
+    root = project_root()
+    sid = session_id()
+    path = state_path(sid, root)
+    state = load(path, sid, root)
+
+    text = raw.strip()
+    match = SUBCOMMANDS.match(text)
+
+    if not text:
+        result = cmd_list(state)
+    elif match:
+        g = match.groupdict()
+        if g["list"]:
+            result = cmd_list(state)
+        elif g["pick"] and g["pick_detail"]:
+            # "N <text>" is genuinely ambiguous: starting #N with a brief, or
+            # parking an idea that happens to begin with a number. Resolve it on
+            # the only evidence available — whether #N is an open todo. So
+            # "/todo 3 what would packaging look like" starts #3, while
+            # "/todo 404 handler needs a test" parks, because #404 isn't open.
+            if any(t["id"] == int(g["pick"]) for t in open_todos(state)):
+                result = cmd_next(state, g["pick"], g["pick_detail"])
+            else:
+                result = cmd_add(state, text)
+        elif g["next_id"] or g["pick"]:
+            # "/todo next 4" and the bare "/todo 4" both mean: start #4
+            result = cmd_next(state, g["next_id"] or g["pick"], g["next_detail"])
+        elif g["next"]:
+            result = cmd_next(state)
+        elif g["mute"]:
+            result = cmd_mute(state, True)
+        elif g["unmute"]:
+            result = cmd_mute(state, False)
+        elif g["config"]:
+            result = cmd_config(g["cfg_key"], g["cfg_val"])
+        elif g["help"]:
+            result = cmd_help()
+        elif g["edit"]:
+            result = cmd_edit(state, g["edit_id"])
+        elif g["sessions"]:
+            result = cmd_sessions(state)
+        elif g["adopt"]:
+            result = cmd_adopt(state, g["adopt_id"])
+        else:
+            result = cmd_resolve(state, g["resolve_id"], g["resolve"].lower())
+    else:
+        result = cmd_add(state, text)
+
+    save(path, state)
+    return result
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if not argv:
+        print("usage: todo.py {dispatch|annotate|set|hook-nudge|hook-resurface}", file=sys.stderr)
+        return 1
+
+    cmd = argv[0]
+
+    if cmd in ("hook-nudge", "hook-resurface"):
+        try:
+            payload = json.load(sys.stdin)
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        try:
+            if cmd == "hook-nudge":
+                hook_nudge(payload)
+            else:
+                hook_resurface(payload)
+        except Exception:
+            pass  # a reminder must never break the session
+        return 0
+
+    if cmd == "dispatch":
+        raw = sys.stdin.read() if "--stdin" in argv else " ".join(argv[1:])
+        print(dispatch(raw))
+        return 0
+
+    if cmd == "set":
+        root, sid = project_root(), session_id()
+        path = state_path(sid, root)
+        state = load(path, sid, root)
+        fields = parse_flags(argv[2:], {"text", "why", "about", "detail", "status"})
+        print(cmd_set(state, argv[1], fields))
+        save(path, state)
+        return 0
+
+    if cmd == "annotate":
+        root, sid = project_root(), session_id()
+        path = state_path(sid, root)
+        state = load(path, sid, root)
+        rest = argv[2:]
+        about = None
+        if "--about" in rest:
+            i = rest.index("--about")
+            about = " ".join(rest[i + 1:])
+            rest = rest[:i]
+        print(cmd_annotate(state, argv[1], " ".join(rest), about))
+        save(path, state)
+        return 0
+
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
