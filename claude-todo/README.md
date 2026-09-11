@@ -29,7 +29,7 @@ reconstructing why you cared. Each git worktree counts as its own project —
 ## Install
 
 ```bash
-claude plugin marketplace add dalyaaron/toolshed
+claude plugin marketplace add DalyAaron/toolshed
 claude plugin install claude-todo@toolshed
 ```
 
@@ -46,7 +46,7 @@ park something:
 <summary>Running from a local checkout instead</summary>
 
 ```bash
-git clone https://github.com/dalyaaron/toolshed ~/code/toolshed
+git clone https://github.com/DalyAaron/toolshed ~/code/toolshed
 claude plugin marketplace add ~/code/toolshed
 claude plugin install claude-todo@toolshed
 ```

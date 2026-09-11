@@ -5,7 +5,7 @@ Small, self-contained tools for [Claude Code](https://claude.com/claude-code).
 Add the shelf once:
 
 ```bash
-claude plugin marketplace add dalyaaron/toolshed
+claude plugin marketplace add DalyAaron/toolshed
 ```
 
 Then install whatever you want from it.
