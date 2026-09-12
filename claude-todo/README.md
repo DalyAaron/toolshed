@@ -290,6 +290,8 @@ plugin and are left alone — delete `<profile>/todos/` if you want them gone to
 
 - **Introduced plans** — tag todos under a single plan and execute them all at
   once: `/todo +<plan> <idea>`, `/todo plans`, `/todo execute +<plan>`.
+- **Release notes on update** — the first session after an update prints a few
+  lines on what changed, once, straight to your terminal.
 - **Removed the `Locality:` line and the `[warm: <file>]` marker.** Todos parked
   while the same file was open are not thereby related. `/todo next` now offers
   the most-raised todo first, and the `focus_file_count` and

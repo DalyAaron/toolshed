@@ -65,6 +65,17 @@ STOPWORDS = {
 PLAN_NAME = r"[A-Za-z][\w-]*"
 PLAN_PREFIX = re.compile(rf"^\+({PLAN_NAME})(?:\s+|$)")
 
+# Shown once, in the terminal, the first session after an update. Keep each
+# entry to a few lines: it interrupts someone who did not ask for it.
+UPGRADE_NOTES = {
+    "1.1.0": (
+        "/todo 1.1.0 — plans: park the steps of a bigger job, then run them together.\n"
+        "  /todo +<plan> <idea>    park a step        /todo plans            list plans\n"
+        "  /todo plan +<plan>      review the steps   /todo execute +<plan>  run them\n"
+        "The Locality line and the [warm: file] marker are gone. Details: /todo help"
+    ),
+}
+
 
 # ---------------------------------------------------------------- paths / state
 
@@ -106,6 +117,28 @@ def config_path() -> Path:
     return store_base() / "config.json"
 
 
+def read_config_file() -> dict:
+    """Raw config.json, or {} when it is missing or corrupt."""
+    path = config_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text()) or {}
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def write_config_value(key: str, value: object) -> None:
+    """Persist one key, leaving the rest of the file alone."""
+    stored = read_config_file()
+    stored[key] = value
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(stored, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
 def todo_dir(root: str) -> Path:
     """Per-profile store, keyed by project.
 
@@ -144,18 +177,12 @@ def load_config() -> tuple[dict, dict]:
     values = dict(DEFAULTS)
     sources = {k: "default" for k in DEFAULTS}
 
-    path = config_path()
-    if path.exists():
-        try:
-            stored = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            stored = {}
-        for key, raw in (stored or {}).items():
-            if key in DEFAULTS:
-                try:
-                    values[key], sources[key] = coerce(key, raw), "config.json"
-                except (ValueError, TypeError):
-                    pass  # a bad stored value must not break reminders
+    for key, raw in read_config_file().items():
+        if key in DEFAULTS:  # ignores bookkeeping keys like last_seen_version
+            try:
+                values[key], sources[key] = coerce(key, raw), "config.json"
+            except (ValueError, TypeError):
+                pass  # a bad stored value must not break reminders
 
     for key in DEFAULTS:
         env = os.environ.get("CLAUDE_TODO_" + key.upper())
@@ -1027,18 +1054,8 @@ def cmd_config(key: str | None = None, raw: str | None = None) -> str:
             value = coerce(key, raw)
         except (ValueError, TypeError) as exc:
             return f"Invalid value for {key}: {exc}"
+        write_config_value(key, value)
         path = config_path()
-        stored = {}
-        if path.exists():
-            try:
-                stored = json.loads(path.read_text()) or {}
-            except (json.JSONDecodeError, OSError):
-                stored = {}
-        stored[key] = value
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(stored, indent=2) + "\n")
-        os.replace(tmp, path)
         note = ""
         if sources.get(key) == "env":
             note = f"\nNOTE: CLAUDE_TODO_{key.upper()} is set and still overrides this."
@@ -1077,13 +1094,53 @@ def cmd_config(key: str | None = None, raw: str | None = None) -> str:
 
 # ----------------------------------------------------------------- hook paths
 
-def emit(event: str, context: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
+def emit(event: str, context: str | None = None, system: str | None = None) -> None:
+    """Hook output, on two channels that reach different readers.
+
+    `context` is injected into Claude's context and never shown to the user;
+    `system` is printed in the user's terminal and never shown to Claude. Both
+    can travel in one payload. See DESIGN.md, "Two hook output channels".
+    """
+    out: dict = {}
+    if context is not None:
+        out["hookSpecificOutput"] = {
             "hookEventName": event,
             "additionalContext": context,
         }
-    }))
+    if system:
+        out["systemMessage"] = system
+    if out:
+        print(json.dumps(out))
+
+
+def plugin_version() -> str | None:
+    """The version this copy declares, read from its own plugin manifest.
+
+    Derived from __file__ rather than CLAUDE_PLUGIN_ROOT, which is expanded in
+    the hook command but not guaranteed in the process environment.
+    """
+    try:
+        manifest = Path(__file__).resolve().parents[2] / ".claude-plugin" / "plugin.json"
+        return str(json.loads(manifest.read_text())["version"]) or None
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
+
+
+def upgrade_note() -> str | None:
+    """Release notes to print once, the first run after the version changes.
+
+    Always records the version it saw, so notes can never pile up or repeat.
+    Returns nothing on a fresh install: someone who has never run an older
+    version has nothing to be told about.
+    """
+    version = plugin_version()
+    if not version:
+        return None  # a checkout without a manifest: nothing to announce
+    seen = read_config_file().get("last_seen_version")
+    if seen == version:
+        return None
+    write_config_value("last_seen_version", version)
+    return UPGRADE_NOTES.get(version) if seen else None
 
 
 REMINDER_FRAME = (
@@ -1140,11 +1197,8 @@ def hook_nudge(payload: dict) -> None:
     emit("UserPromptSubmit", f"{REMINDER_FRAME}\n\n{body}\n\n(`/todo` lists them, `/todo next` starts one.)")
 
 
-def hook_resurface(payload: dict) -> None:
-    """SessionStart: re-inject open todos after compact/resume, or carry over on startup."""
-    if cfg()["reminder_mode"] == "off":
-        return
-
+def resurface_context(payload: dict) -> str | None:
+    """The reminder Claude should get at session start, if there is one."""
     root = project_root()
     sid = session_id(payload.get("session_id"))
     source = payload.get("source", "startup")
@@ -1155,32 +1209,46 @@ def hook_resurface(payload: dict) -> None:
         items = open_todos(state)
         if items and not state.get("muted"):
             body = "\n".join(render(t, verbose=True) for t in items)
-            emit("SessionStart", (
+            return (
                 f"{REMINDER_FRAME} They survived a `{source}`, so the conversation "
                 f"detail around them may be gone.\n\n{body}\n\n"
                 "(`/todo` lists them, `/todo next` starts one.)"
-            ))
-            return
+            )
 
     if source not in ("startup", "clear"):
-        return
+        return None
 
     # automatic carry-over stays within this project; `/todo adopt` looks wider
     carried = carryover_candidates(root, sid)
     if not carried:
-        return
+        return None
 
     lines = [
         f"  {label(todo)} — parked {todo.get('created', '?')} on "
         f"{todo.get('branch') or 'unknown branch'} ({source_label(p, root)})"
         for p, todo in carried[:5]
     ]
-    emit("SessionStart", (
+    return (
         f"The user left {len(carried)} unfinished /todo item(s) from earlier sessions in "
         f"this project. Passive reminder only — surface them in one short line if "
         f"relevant, and do not act on them unless asked. `/todo adopt` moves one into "
         f"this session so it can be acted on.\n\n" + "\n".join(lines)
-    ))
+    )
+
+
+def hook_resurface(payload: dict) -> None:
+    """SessionStart: release notes after an update, plus any open todos.
+
+    The notes go out as `systemMessage`, which Claude Code prints in the
+    terminal verbatim and does not show the model. That is the right channel:
+    release notes are for the person, and a paraphrase of them is worse than
+    the real thing.
+    """
+    note = upgrade_note()  # always records, so a skipped note can't come back
+    if cfg()["reminder_mode"] == "off":
+        emit("SessionStart")  # "off" means silent, release notes included
+        return
+    emit("SessionStart", resurface_context(payload), system=note)
 
 
 # ------------------------------------------------------------------- dispatch

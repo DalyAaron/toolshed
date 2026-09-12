@@ -181,6 +181,54 @@ surviving a compaction possible at all.
 The nudge hook's fast path — a session that has never used `/todo` — is a single
 `stat` and costs about 45 ms.
 
+## Two hook output channels
+
+A hook can write to two different readers in one JSON payload, and they do not
+overlap. This was established by experiment, because the documentation says
+`systemMessage` is supported on "some events" without saying which:
+
+| Field | Reaches the user's terminal | Reaches Claude |
+| :--- | :--- | :--- |
+| `systemMessage` (top level) | **yes**, verbatim, prefixed `<Event> says:` | no |
+| `hookSpecificOutput.additionalContext` | no | **yes** |
+
+Both `SessionStart` and `UserPromptSubmit` accept both fields, in the same
+payload. Verified by emitting distinct markers on each channel and comparing
+what the terminal showed against what the model received.
+
+That split is why release notes go out as `systemMessage` and reminders go out
+as `additionalContext`. Notes are for the person and must arrive word for word;
+a reminder is an instruction to Claude about how to behave. Sending notes
+through the model would mean they arrive paraphrased, at Claude's discretion,
+having spent context to get there.
+
+## Release notes, shown once
+
+There is no plugin-install or plugin-update hook event, no changelog field in
+`plugin.json`, and `claude plugin update` prints nothing about what changed. So
+`SessionStart` emulates it: compare the version in this copy's own manifest
+against `last_seen_version` in `config.json`, and print `UPGRADE_NOTES[version]`
+when they differ.
+
+Three rules keep it from becoming a nuisance:
+
+- **The version is recorded whether or not anything is printed**, so a note can
+  never appear twice, and a missing entry can't queue up for later.
+- **A fresh install says nothing.** No `last_seen_version` means nobody has run
+  an older version, and release notes for software you just met are noise.
+- **`reminder_mode: off` silences these too.** It is the "be quiet" switch, and
+  carving out an exception for our own announcements would be self-serving.
+
+The flag lives in `config.json`, beside the settings and outside the plugin. It
+deliberately does not use `${CLAUDE_PLUGIN_DATA}`: plugin data is tied to the
+plugin's lifecycle, which an update is precisely the churn of, and a flag that
+reset on update would re-announce the same version forever.
+
+The version is read from `__file__`'s own plugin manifest rather than
+`CLAUDE_PLUGIN_ROOT`. That variable is expanded inside the hook *command* in
+`hooks.json`, but is not guaranteed in the process environment, and a checkout
+without a manifest simply announces nothing.
+
 ## What this deliberately is not
 
 - **Not `TodoWrite`.** That's Claude's plan state for the task in flight; it gets
