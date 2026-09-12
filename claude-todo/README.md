@@ -23,7 +23,7 @@ cared. Each git worktree counts as its own project —
 ## Requirements
 
 - Claude Code (plugin support)
-- Python 3.9+ (standard library only — no pip install)
+- Python 3.6+ (standard library only — no pip install)
 - `git` optional; without it you lose the branch/commit context, nothing else
 
 ## Install
@@ -286,12 +286,19 @@ plugin and are left alone — delete `<profile>/todos/` if you want them gone to
 
 ## Changelog
 
+### 1.1.1
+
+- **Runs on Python 3.6+**, down from 3.9. On a system whose `python3` predates
+  3.7 the script failed to parse, so every prompt reported a `UserPromptSubmit
+  hook error` and no todo could be parked.
+- **Release notes on update** — the first session after an update prints a few
+  lines on what changed, once, straight to your terminal. Intended for 1.1.0
+  and missing from it.
+
 ### 1.1.0
 
 - **Introduced plans** — tag todos under a single plan and execute them all at
   once: `/todo +<plan> <idea>`, `/todo plans`, `/todo execute +<plan>`.
-- **Release notes on update** — the first session after an update prints a few
-  lines on what changed, once, straight to your terminal.
 - **Removed the `Locality:` line and the `[warm: <file>]` marker.** Todos parked
   while the same file was open are not thereby related. `/todo next` now offers
   the most-raised todo first, and the `focus_file_count` and

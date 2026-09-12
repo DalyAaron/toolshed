@@ -8,8 +8,6 @@ The script is the only writer. The skill body and the hooks are both readers of
 the same schema, so nothing has to hand-write JSON.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import re
@@ -20,7 +18,7 @@ from pathlib import Path
 
 REMINDER_MODES = ("turns", "minutes", "session", "off")
 
-SETTINGS: dict[str, tuple[object, str, str]] = {
+SETTINGS: "dict[str, tuple[object, str, str]]" = {
     # key: (default, accepted values, what it controls)
     "reminder_mode": (
         "turns", " | ".join(REMINDER_MODES),
@@ -73,6 +71,11 @@ UPGRADE_NOTES = {
         "  /todo +<plan> <idea>    park a step        /todo plans            list plans\n"
         "  /todo plan +<plan>      review the steps   /todo execute +<plan>  run them\n"
         "The Locality line and the [warm: file] marker are gone. Details: /todo help"
+    ),
+    "1.1.1": (
+        "/todo 1.1.1 — runs on Python 3.6+ now, so the reminder hooks no longer\n"
+        "fail on older systems. This note is the release-notes channel working:\n"
+        "every future update prints its own, once, at the start of a session."
     ),
 }
 
@@ -169,7 +172,7 @@ def coerce(key: str, raw: object) -> object:
     return value
 
 
-def load_config() -> tuple[dict, dict]:
+def load_config() -> "tuple[dict, dict]":
     """Effective config plus where each value came from.
 
     Precedence: environment (CLAUDE_TODO_<KEY>) > config.json > default.
@@ -195,7 +198,7 @@ def load_config() -> tuple[dict, dict]:
     return values, sources
 
 
-_CFG: tuple[dict, dict] | None = None
+_CFG: "tuple[dict, dict] | None" = None
 
 
 def cfg() -> dict:
@@ -210,7 +213,7 @@ def cfg_sources() -> dict:
     return _CFG[1]
 
 
-def session_id(explicit: str | None = None) -> str:
+def session_id(explicit: "str | None" = None) -> str:
     return explicit or os.environ.get("CLAUDE_CODE_SESSION_ID") or "no-session"
 
 
@@ -253,7 +256,8 @@ def now() -> str:
 def _git(*args: str) -> str:
     try:
         out = subprocess.run(
-            ("git",) + args, capture_output=True, text=True, timeout=5
+            ("git",) + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=5
         )
         # rstrip newlines only: `git status --porcelain` encodes status in the
         # first two columns, so a leading space is significant data.
@@ -262,7 +266,7 @@ def _git(*args: str) -> str:
         return ""
 
 
-def dirty_files() -> list[str]:
+def dirty_files() -> "list[str]":
     """Dirty paths, most recently modified first."""
     porcelain = _git("status", "--porcelain")
     files = []
@@ -293,7 +297,7 @@ def capture_context() -> dict:
 
 # ----------------------------------------------------------------------- dedupe
 
-def tokens(text: str) -> set[str]:
+def tokens(text: str) -> "set[str]":
     words = re.findall(r"[a-z0-9_]+", text.lower())
     return {w for w in words if w not in STOPWORDS} or set(words)
 
@@ -331,13 +335,13 @@ def subject_outside_repo(todo: dict) -> bool:
     return bool(project) and not str(Path(subject).expanduser()).startswith(project)
 
 
-def open_todos(state: dict) -> list[dict]:
+def open_todos(state: dict) -> "list[dict]":
     return [t for t in state["todos"] if t["status"] == "open"]
 
 
 # --------------------------------------------------------------------- plans
 
-def split_plan(text: str) -> tuple[str | None, str]:
+def split_plan(text: str) -> "tuple[str | None, str]":
     """Peel a leading `+name` off captured text: "+docs add a changelog".
 
     Only a leading token counts, so "support the +x flag" stays plain text.
@@ -353,23 +357,23 @@ def label(todo: dict) -> str:
     return f"+{todo['plan']} {todo['text']}" if todo.get("plan") else todo["text"]
 
 
-def plan_steps(state: dict, name: str) -> list[dict]:
+def plan_steps(state: dict, name: str) -> "list[dict]":
     """A plan's steps in capture order, which is the order they run in."""
     return sorted((t for t in state["todos"] if t.get("plan") == name),
                   key=lambda t: t["id"])
 
 
-def plan_names(state: dict) -> list[str]:
+def plan_names(state: dict) -> "list[str]":
     """Plans in this session, ordered by their earliest step."""
-    names: list[str] = []
+    names: "list[str]" = []
     for todo in sorted(state["todos"], key=lambda t: t["id"]):
         if todo.get("plan") and todo["plan"] not in names:
             names.append(todo["plan"])
     return names
 
 
-def parse_ids(raw: str) -> list[int]:
-    ids: list[int] = []
+def parse_ids(raw: str) -> "list[int]":
+    ids: "list[int]" = []
     for part in re.split(r"[\s,]+", raw.strip()):
         if part and int(part) not in ids:
             ids.append(int(part))
@@ -458,8 +462,8 @@ def cmd_list(state: dict) -> str:
     return "\n".join(out)
 
 
-def cmd_next(state: dict, target: str | None = None,
-             detail: str | None = None) -> str:
+def cmd_next(state: dict, target: "str | None" = None,
+             detail: "str | None" = None) -> str:
     items = open_todos(state)
     if not items:
         return "No open todos in this session."
@@ -547,7 +551,7 @@ def cmd_plan(state: dict, name: str, execute: bool = False) -> str:
     return "\n".join(out)
 
 
-def cmd_tag(state: dict, ids: list[int], name: str | None) -> str:
+def cmd_tag(state: dict, ids: "list[int]", name: "str | None") -> str:
     """Put open todos into a plan, or take them out of one (name=None)."""
     items = {t["id"]: t for t in open_todos(state)}
     missing = [i for i in ids if i not in items]
@@ -685,7 +689,7 @@ FILES
       config.json                settings, once you change one"""
 
 
-def cmd_edit(state: dict, target: str | None = None) -> str:
+def cmd_edit(state: dict, target: "str | None" = None) -> str:
     """Read a todo out for editing. The writer is `todo.py set`."""
     items = [t for t in state["todos"] if t["status"] == "open"]
     if not items:
@@ -719,7 +723,7 @@ def cmd_edit(state: dict, target: str | None = None) -> str:
     ])
 
 
-def cmd_set(state: dict, ident: str, fields: dict[str, str]) -> str:
+def cmd_set(state: dict, ident: str, fields: "dict[str, str]") -> str:
     """Apply edits gathered from the user. An empty value clears a field."""
     try:
         tid = int(ident)
@@ -767,9 +771,9 @@ def cmd_set(state: dict, ident: str, fields: dict[str, str]) -> str:
     return f"No todo #{tid}."
 
 
-def parse_flags(argv: list[str], names: set[str]) -> dict[str, str]:
+def parse_flags(argv: "list[str]", names: "set[str]") -> "dict[str, str]":
     """Collect `--flag value...` pairs, tolerating unquoted multi-word values."""
-    found: dict[str, str] = {}
+    found: "dict[str, str]" = {}
     i = 0
     while i < len(argv):
         token = argv[i]
@@ -792,7 +796,7 @@ def cmd_mute(state: dict, muted: bool) -> str:
 
 
 def cmd_annotate(state: dict, ident: str, note: str,
-                 about: str | None = None) -> str:
+                 about: "str | None" = None) -> str:
     """Attach conversational context, and optionally the concrete thing meant.
 
     `about` exists because prose hedges. When the conversation makes the
@@ -814,7 +818,7 @@ def cmd_annotate(state: dict, ident: str, note: str,
     return f"No todo #{tid}."
 
 
-_MAIN_SLUG: dict[str, str] = {}
+_MAIN_SLUG: "dict[str, str]" = {}
 
 
 def main_repo_slug(root: str) -> str:
@@ -846,7 +850,7 @@ def store_label(directory: Path, root: str) -> str:
     return directory.name
 
 
-def sibling_stores(root: str) -> list[Path]:
+def sibling_stores(root: str) -> "list[Path]":
     """Store dirs for other checkouts of the same repo (i.e. its worktrees).
 
     Each worktree keys to its own project, which is intended for automatic
@@ -869,7 +873,7 @@ def sibling_stores(root: str) -> list[Path]:
 
 
 def carryover_candidates(root: str, sid: str,
-                         include_siblings: bool = False) -> list[tuple[Path, dict]]:
+                         include_siblings: bool = False) -> "list[tuple[Path, dict]]":
     """Open todos from other recent sessions, newest file first then by id.
 
     The ordering is deterministic so the numbering `/todo adopt` prints stays
@@ -878,7 +882,7 @@ def carryover_candidates(root: str, sid: str,
     directories = sibling_stores(root) if include_siblings else [todo_dir(root)]
     cutoff = time.time() - cfg()["carryover_days"] * 86400
 
-    files: list[Path] = []
+    files: "list[Path]" = []
     for directory in directories:
         if not directory.is_dir():
             continue
@@ -889,7 +893,7 @@ def carryover_candidates(root: str, sid: str,
             continue
     files.sort(key=lambda p: (-p.stat().st_mtime, p.name))
 
-    found: list[tuple[Path, dict]] = []
+    found: "list[tuple[Path, dict]]" = []
     for f in files:
         try:
             other = json.loads(f.read_text())
@@ -910,7 +914,7 @@ def source_label(path: Path, root: str) -> str:
     return label
 
 
-def _move_one(state: dict, path: Path, todo: dict) -> str | None:
+def _move_one(state: dict, path: Path, todo: dict) -> "str | None":
     """Close a todo in its source session and bring it into this one.
 
     Returns a description of what happened, or None if it was already gone.
@@ -949,9 +953,9 @@ def _move_one(state: dict, path: Path, todo: dict) -> str | None:
     return f"#{moved['id']}: {label(moved)}"
 
 
-def _sources(candidates: list[tuple[Path, dict]]) -> list[Path]:
+def _sources(candidates: "list[tuple[Path, dict]]") -> "list[Path]":
     """Distinct source files, in the order they appear in candidates."""
-    order: list[Path] = []
+    order: "list[Path]" = []
     for path, _ in candidates:
         if path not in order:
             order.append(path)
@@ -979,7 +983,7 @@ def cmd_sessions(state: dict) -> str:
     return "\n".join(lines)
 
 
-def cmd_adopt(state: dict, target: str | None = None) -> str:
+def cmd_adopt(state: dict, target: "str | None" = None) -> str:
     root, sid = project_root(), state["session_id"]
     candidates = carryover_candidates(root, sid, include_siblings=True)
     if not candidates:
@@ -1031,7 +1035,7 @@ def cmd_adopt(state: dict, target: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def wrap_doc(doc: str, indent: int, width: int = 74) -> list[str]:
+def wrap_doc(doc: str, indent: int, width: int = 74) -> "list[str]":
     """Wrap a setting's description under its aligned column."""
     pad = " " * (indent + 4)
     out, line = [], pad
@@ -1046,7 +1050,7 @@ def wrap_doc(doc: str, indent: int, width: int = 74) -> list[str]:
     return out
 
 
-def cmd_config(key: str | None = None, raw: str | None = None) -> str:
+def cmd_config(key: "str | None" = None, raw: "str | None" = None) -> str:
     values, sources = cfg(), cfg_sources()
 
     if key and raw is not None:
@@ -1094,7 +1098,7 @@ def cmd_config(key: str | None = None, raw: str | None = None) -> str:
 
 # ----------------------------------------------------------------- hook paths
 
-def emit(event: str, context: str | None = None, system: str | None = None) -> None:
+def emit(event: str, context: "str | None" = None, system: "str | None" = None) -> None:
     """Hook output, on two channels that reach different readers.
 
     `context` is injected into Claude's context and never shown to the user;
@@ -1113,7 +1117,7 @@ def emit(event: str, context: str | None = None, system: str | None = None) -> N
         print(json.dumps(out))
 
 
-def plugin_version() -> str | None:
+def plugin_version() -> "str | None":
     """The version this copy declares, read from its own plugin manifest.
 
     Derived from __file__ rather than CLAUDE_PLUGIN_ROOT, which is expanded in
@@ -1126,21 +1130,44 @@ def plugin_version() -> str | None:
         return None
 
 
-def upgrade_note() -> str | None:
+def used_before(stored: dict) -> bool:
+    """Whether this profile ran /todo before the version tracking existed.
+
+    True when the store holds anything a run would have left behind: a setting
+    the person changed, or a project directory from a parked todo.
+    """
+    if any(k != "last_seen_version" for k in stored):
+        return True
+    try:
+        base = store_base()
+        return any(p.is_dir() for p in base.iterdir())
+    except OSError:
+        return False
+
+
+def upgrade_note() -> "str | None":
     """Release notes to print once, the first run after the version changes.
 
     Always records the version it saw, so notes can never pile up or repeat.
     Returns nothing on a fresh install: someone who has never run an older
     version has nothing to be told about.
+
+    `last_seen_version` only started being recorded in 1.1.1, so an upgrade
+    from before that looks identical to a fresh install by that key alone.
+    An existing store tells the two apart: a genuinely new install has no
+    todos parked and no settings of its own yet.
     """
     version = plugin_version()
     if not version:
         return None  # a checkout without a manifest: nothing to announce
-    seen = read_config_file().get("last_seen_version")
+    stored = read_config_file()
+    seen = stored.get("last_seen_version")
     if seen == version:
         return None
     write_config_value("last_seen_version", version)
-    return UPGRADE_NOTES.get(version) if seen else None
+    if not seen and not used_before(stored):
+        return None
+    return UPGRADE_NOTES.get(version)
 
 
 REMINDER_FRAME = (
@@ -1197,7 +1224,7 @@ def hook_nudge(payload: dict) -> None:
     emit("UserPromptSubmit", f"{REMINDER_FRAME}\n\n{body}\n\n(`/todo` lists them, `/todo next` starts one.)")
 
 
-def resurface_context(payload: dict) -> str | None:
+def resurface_context(payload: dict) -> "str | None":
     """The reminder Claude should get at session start, if there is one."""
     root = project_root()
     sid = session_id(payload.get("session_id"))
