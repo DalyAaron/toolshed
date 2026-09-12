@@ -15,9 +15,9 @@ That's the whole interaction. The idea is saved, Claude carries on with what it
 was doing, and the todo finds its way back to you later.
 
 Parked todos are scoped to **the session, in this project, under this Claude Code
-profile**. They remember the branch, the commit, and which files you were editing
-when the thought struck, so picking one up an hour later doesn't mean
-reconstructing why you cared. Each git worktree counts as its own project —
+profile**. They remember the branch and the commit you were on when the thought
+struck, so picking one up an hour later doesn't mean reconstructing why you
+cared. Each git worktree counts as its own project —
 `/todo adopt` is how you pull a worktree's ideas into your main checkout.
 
 ## Requirements
@@ -62,10 +62,15 @@ checkout take effect on the next session.
 | **Park** | `/todo <idea>` | Save it. One-line ack, no discussion. |
 | **Review** | `/todo` or `/todo list` | Open todos, with the context each was captured in. |
 | | `/todo sessions` | Other sessions of this repo holding open todos. |
-| **Do** | `/todo next` | Start one — todos touching files you're already in come first. |
+| **Do** | `/todo next` | Start one — the most-raised first, oldest on a tie. |
 | | `/todo 4` | Start that specific todo. |
 | | `/todo 4 <detail>` | Start it *and* say what you want from it this time. |
 | | `/todo done 4` / `drop 4` | Complete or discard it. |
+| **Plan** | `/todo +docs <idea>` | Park it as the next step of plan `docs`. |
+| | `/todo tag 2 3 +docs` / `untag 2` | Put existing todos into a plan, or take them out. |
+| | `/todo plans` | List the plans in this session. |
+| | `/todo plan +docs` | Review one plan's steps, in order. |
+| | `/todo execute +docs` | Work through the plan's open steps, marking each done. |
 | **Change** | `/todo edit 4` | Change its fields, step by step. |
 | **Merge** | `/todo adopt` | Bring another session's todos into this one. |
 | **Quiet** | `/todo mute` / `unmute` | Silence or restore reminders for this session. |
@@ -82,26 +87,24 @@ A listing looks like this:
 
 ```
 2 open todo(s) in this session:
-  #1 the retry backoff is still sync, push it through run_blocking [warm: retry.py]
+  #1 the retry backoff is still sync, push it through run_blocking
       why: we were converting the client to async and noticed the retry path
            still blocks the event loop
       captured on: fix/DENG-3584 862c8bf at 2026-09-09T15:35:37
-      you were editing: src/clients/retry.py, tests/test_retry.py
       diff then: 5 files changed, 53 insertions(+), 5 deletions(-)
-  #2 update the readme
+  #2 +docs update the readme (raised 2x)
       about: ~/code/other-project/README.md   (outside the repo this was captured in)
       detail: cover the new commands and the outside-repo marker
       why: the session added help and next-with-detail, neither of which the
            readme mentions
       captured on: fix/DENG-3584 862c8bf at 2026-09-09T15:36:04
-
-Locality: #1, #2 were captured while editing src/clients/retry.py — cheaper
-to do together than to reload that context twice.
 ```
 
 Each line answers a different question. `about:` is *what* the todo concerns,
 `detail:` is *what you asked for* when you started it, `why:` is how it came up,
-and the `captured on` / `you were editing` lines are *where you were standing*.
+and the `captured on` line is *where you were standing*. A leading `+name` means
+the todo is a step of that plan, and `(raised 2x)` means the same idea was
+parked twice.
 
 When a todo names something ambiguous — "the readme", "the tests" — Claude
 resolves it from the conversation and records the concrete answer as `about:`.
@@ -109,9 +112,9 @@ That matters because the branch you're on is often unrelated to the thought you
 just parked: a todo about your tooling gets captured on whatever feature branch
 happens to be checked out.
 
-When `about:` points somewhere outside the repo it was captured in, the listing
-says so, and `/todo next` skips the staleness check — a signal derived from repo
-files says nothing about a subject that isn't in the repo.
+When `about:` points somewhere outside the repo it was captured in, both the
+listing and `/todo next` say so — the branch and commit describe where you were
+standing, and say nothing about a subject that isn't in the repo.
 
 Near-duplicates merge instead of piling up: park the same idea twice and it
 marks the existing todo *raised 2x* rather than adding a second entry.
@@ -135,16 +138,58 @@ followed by text is read as "start that todo" **only when the number is an open
 todo**, so `/todo 404 handler needs a test` still parks an idea — #404 doesn't
 exist. Use the explicit `next N` form when you want no ambiguity at all.
 
+## Plans: park the steps, then run them
+
+Sometimes the ideas you're parking aren't separate — they're the steps of one
+bigger piece of work. Give them a plan name as you park them:
+
+```
+/todo +docs add a changelog to the readme
+/todo +docs write a user guide and link it from the readme
+/todo +docs document the plan commands
+```
+
+Or group todos you've already parked: `/todo tag 2 3 +docs`.
+
+When you're ready, review it and hand it over:
+
+```
+/todo plans           # the plans in this session
+/todo plan +docs      # its open steps, in order, with the context of each
+/todo execute +docs   # Claude works through them, marking each done as it lands
+```
+
+Steps run in the order you parked them. Claude only moves one when it plainly
+depends on a later step, and says so when it does. Each step is marked done the
+moment it's finished rather than all at the end, so if the run is interrupted,
+`/todo execute +docs` again picks up where it stopped.
+
+A few details:
+
+- **A plan is always written `+name`.** That one rule is what keeps your ideas
+  safe: `/todo plan docs for next meeting` parks an idea, because nothing in it
+  names a plan. Only `/todo plan +docs` asks for the plan.
+- A name starts with a letter, and only a *leading* `+name` tags a new todo — so
+  `/todo support the +x flag` and `/todo +1 to this` are plain ideas too.
+- A todo belongs to one plan: tagging it into another moves it, and
+  `/todo untag 2` takes it out of all of them.
+- A plan step is an ordinary todo carrying a tag, so `/todo edit 4`, `/todo 4`,
+  `done` and `drop` all work on it exactly as they do on anything else.
+- Near-duplicates never merge across plans: *write the tests* in `+auth` and in
+  `+billing` stay two steps.
+- A plan spans sessions the same way any todo does: `/todo adopt +docs` pulls
+  every open step of `docs` in from other sessions of the repo.
+
 ## Editing a todo
 
 `/todo edit 4` walks you through it a field at a time — the text, the `detail`,
-the `why`, the subject, the status — proposing a value for each so you can accept
-it in one click or type your own. `/todo edit` on its own asks which todo first.
+the `why`, the subject, the plan, the status — proposing a value for each so you
+can accept it in one click or type your own. `/todo edit` on its own asks which todo first.
 An empty answer clears a field; the text can't be emptied.
 
 Editing keeps the todo's id and its captured git context, which is the reason to
 edit rather than drop and re-park: re-parking would record today's branch and
-files instead of the ones the idea actually came from.
+commit instead of the ones the idea actually came from.
 
 `captured on` is deliberately not editable.
 
@@ -160,6 +205,7 @@ brings it over:
 /todo adopt 3         # move one in
 /todo adopt s2        # move all of source #2 in — "merge that session"
 /todo adopt all       # move everything in
+/todo adopt +docs     # move every step of plan "docs" in
 ```
 
 Adopting moves a todo: it closes at the source so it won't be offered twice, and
@@ -206,8 +252,6 @@ effective on your next prompt.
 | `max_nudge_items` | `3` | Todos shown per reminder. |
 | `carryover_days` | `7` | How far back a new session looks for unfinished todos. |
 | `dedupe_threshold` | `0.6` | Word overlap (0–1) that counts as a duplicate. |
-| `focus_file_count` | `3` | How many "files you were editing" to record. |
-| `focus_window_minutes` | `30` | How recently a file must have changed to count. |
 
 Any key can also be set for one session with an environment variable —
 `CLAUDE_TODO_REMINDER_MODE=off`, and so on. Precedence is **env > config file >
@@ -240,8 +284,26 @@ That removes the skill and its hooks. Your parked todos are stored outside the
 plugin and are left alone — delete `<profile>/todos/` if you want them gone too
 (`/todo help` prints the exact path).
 
+## Changelog
+
+### 1.1.0
+
+- **Introduced plans** — tag todos under a single plan and execute them all at
+  once: `/todo +<plan> <idea>`, `/todo plans`, `/todo execute +<plan>`.
+- **Removed the `Locality:` line and the `[warm: <file>]` marker.** Todos parked
+  while the same file was open are not thereby related. `/todo next` now offers
+  the most-raised todo first, and the `focus_file_count` and
+  `focus_window_minutes` settings are gone.
+
+### 1.0.0
+
+- First release: park an idea without derailing the session, list, start one
+  with `/todo next` (optionally with a detail for that run), edit, complete or
+  drop, adopt todos from other sessions and worktrees, reminders at four
+  cadences that survive a compaction, and `/todo help`.
+
 ## How it works
 
 See [DESIGN.md](./DESIGN.md) — why capture doesn't cost a tool call, why a script
-owns the store rather than Claude, how "files you were editing" is derived, and
-what this deliberately isn't.
+owns the store rather than Claude, how plans are grouped and ordered, and what
+this deliberately isn't.

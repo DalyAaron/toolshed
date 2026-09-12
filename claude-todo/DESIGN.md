@@ -22,7 +22,7 @@ Two habits that follow from that:
   will be trusted.
 - Fixing a bug that took real debugging earns a paragraph here. Half of what
   follows exists because the failure was silent — capture kept working while
-  reminders quietly stopped, or every todo looked related to every other one.
+  reminders quietly stopped.
 
 ## Capture happens before Claude runs
 
@@ -57,7 +57,7 @@ Inside a quoted heredoc that string is inert data, stored verbatim.
 
 Each todo carries two independent descriptions of itself:
 
-- **Ambient**, from the shell: branch, commit, diff stat, focus files. Free, exact,
+- **Ambient**, from the shell: branch, commit, diff stat, dirty files. Free, exact,
   and about *where you were standing*.
 - **Conversational**, from Claude: the `why:` sentence and the `about:` subject.
   Costs one call, and is the only thing that knows *what you meant*.
@@ -72,9 +72,9 @@ overwrites the one field that could have corrected it.
 
 So `SKILL.md` tells Claude to disregard the printed `context:` line when writing
 the note, and to resolve an ambiguous referent from the conversation into
-`about:`. Where `about:` names a path outside the capture repo, the renderer says
-so and `/todo next` suppresses the staleness check, because a repo-file signal
-carries no information about a subject that isn't in the repo.
+`about:`. Where `about:` names a path outside the capture repo, both the renderer
+and `/todo next` say so, because the git context carries no information about a
+subject that isn't in the repo.
 
 ## Resolving `N <text>` by whether the id exists
 
@@ -96,6 +96,48 @@ the output, and undone with `/todo edit`.
 Detail persists on the todo rather than living in the conversation, so an
 interruption doesn't lose it, and repeated details append — the record of how the
 scope evolved is more useful than the latest instruction alone.
+
+## Plans are one field, not tags
+
+`/todo +docs <idea>` puts a todo into plan `docs`, and `/todo execute +docs` hands
+every open step to Claude to execute in order. The feature is "park the steps of
+a bigger job, then run them as a plan".
+
+- **One plan per todo, not a tag set.** Tags look more general, but a step that
+  belonged to two plans would be marked done by whichever ran first, and silently
+  vanish from the other. A todo is a unit of work, so it lives in one plan.
+  `tag` on a todo already in a plan moves it.
+- **"Plan", not "project".** "Project" already means the repo throughout this
+  code (`project_root`, the store's project key); reusing it would make every
+  sentence about scoping ambiguous.
+- **Only a leading `+name`, and names start with a letter.** Accepting `+word`
+  anywhere, todo.txt-style, would split `support the +x flag` into a plan and
+  mangle the idea. The capture path must never misread an idea, so the rule is
+  the narrowest one that still reads naturally.
+- **Order is capture order, and reordering is Claude's job.** There is no
+  `reorder` command. The order you park steps in is usually the order you thought
+  of the work in. When a step plainly depends on a later one, Claude is the
+  one placed to see that at run time, and `SKILL.md` has it move the step and say
+  so. A stored ordering would need its own editing UI and would go stale anyway.
+- **`plan` reviews, `execute` runs.** These are two verbs, not one, so there is
+  always a look-before-you-leap step, and so `execute` can mean "go" without a
+  confirmation round-trip.
+- **Done is marked per step, as it lands.** `SKILL.md` has Claude call
+  `todo.py dispatch done <id>` after each step instead of once at the end, so an
+  interrupted run leaves the store accurate and `/todo execute` resumes where it
+  stopped.
+- **A plan is always referenced as `+name`.** The first cut let you write
+  `plan docs` and resolved the ambiguity the way `N <text>` does — act if that
+  plan exists, park the text otherwise. That made parsing depend on store state:
+  the same words did different things on different days, and `/todo run tests`
+  was a coin flip. Requiring the sigil removes the ambiguity at the source, so
+  `plan docs for next meeting` is unmistakably an idea and `plan +docs` is
+  unmistakably a command. The verb `run` went with it — too common a word to
+  spend on a command — leaving `execute`, which nobody parks.
+- **Dedupe never merges across plans.** "write the tests" in `+auth` and in
+  `+billing` are two pieces of work. An unplanned duplicate merging *into* a
+  plan step is fine, and a planned duplicate merging into an unplanned todo
+  gives it the plan.
 
 ## Editing is stepped, not a form
 
@@ -123,26 +165,6 @@ Claude never writes the JSON itself:
    ask Claude anything.
 
 Writes go through `os.replace()`, so two fast `/todo` calls can't clobber.
-
-## Focus files, and why there's a time window
-
-"Which files was I working on" can't be answered with "which files are dirty" — a
-branch can sit with a dozen modified files for days. Nor with "the N
-most-recently-modified dirty files": that always returns N files, so on a
-long-lived branch stale paths leak in and *every* todo looks related to every
-other one.
-
-So focus = dirty files modified within `focus_window_minutes`, capped at
-`focus_file_count`. The window lets the signal return **nothing**, which is what
-makes it worth trusting when it returns something.
-
-Three behaviors build on it:
-
-- **`[warm: <file>]`** — captured while editing a file you're still editing.
-- **`Locality:`** — several todos captured against the same file; doing them
-  together beats reloading that context twice.
-- **`STALENESS CHECK`** — on `/todo next`, when you're no longer editing what the
-  todo was captured against, so it may already be done.
 
 ## Why the hooks live in `settings.json`
 
@@ -190,7 +212,8 @@ Nothing links todos across leaves automatically except the `SessionStart`
 carry-over scan, which stays inside one project. `/todo adopt` is the explicit
 way across, and it reaches sibling worktrees of the same repo too. It *moves* a
 todo — marking it `adopted` at the source — so it can't be offered twice or
-resolved in two places.
+resolved in two places. A plan is just a field on its todos, so it crosses
+sessions the same way; `/todo adopt +name` moves one plan's open steps at once.
 
 ## Per-profile store
 
@@ -222,10 +245,10 @@ the base for anyone who wants one shared store.
       "note": null,            // the one sentence Claude adds ("why:")
       "about": null,           // the concrete subject Claude resolved
       "detail": null,          // scope you typed via `next <n> <detail>`
+      "plan": null,            // plan name from `+name` or `tag`, lowercased
       "done_at": null,
       "adopted_from": null,    // set on the copy, when moved between sessions
       "adopted_by": null,      // set on the source, pointing at the new session
-      "focus_files": ["src/clients/omni_client.py"],
       "dirty_files": ["…"],
       "branch": "fix/DENG-3584",
       "sha": "66f3d00",
@@ -244,7 +267,7 @@ What the skill and hooks call. You never type these directly.
 todo.py dispatch --stdin           # routes the subcommands, else adds a todo
 todo.py annotate <id> "<s>" [--about <x>]
                                    # attach the why, and the resolved subject
-todo.py set <id> --text/--detail/--why/--about/--status <v>
+todo.py set <id> --text/--detail/--why/--about/--plan/--status <v>
                                    # apply an edit; the write half of /todo edit
 todo.py hook-nudge                 # UserPromptSubmit; hook JSON on stdin
 todo.py hook-resurface             # SessionStart; hook JSON on stdin

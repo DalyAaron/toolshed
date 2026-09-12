@@ -17,7 +17,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable
 
 REMINDER_MODES = ("turns", "minutes", "session", "off")
 
@@ -53,14 +52,6 @@ SETTINGS: dict[str, tuple[object, str, str]] = {
         "Word overlap at which a new todo merges into an existing one instead of "
         "being added. Higher means fewer merges.",
     ),
-    "focus_file_count": (
-        3, "whole number, 0+",
-        "Most 'files you were editing' recorded on a todo.",
-    ),
-    "focus_window_minutes": (
-        30, "whole number, 0+",
-        "How recently a dirty file must have changed to count as one you were editing.",
-    ),
 }
 
 DEFAULTS = {key: spec[0] for key, spec in SETTINGS.items()}
@@ -69,6 +60,10 @@ STOPWORDS = {
     "a", "an", "the", "to", "for", "of", "in", "on", "and", "or", "is", "it",
     "we", "i", "that", "this", "should", "need", "needs", "add", "also", "be",
 }
+
+# A plan name starts with a letter, so "+1 to this" is never read as a plan.
+PLAN_NAME = r"[A-Za-z][\w-]*"
+PLAN_PREFIX = re.compile(rf"^\+({PLAN_NAME})(?:\s+|$)")
 
 
 # ---------------------------------------------------------------- paths / state
@@ -240,9 +235,8 @@ def _git(*args: str) -> str:
         return ""
 
 
-def dirty_files() -> tuple[list[str], "Callable[[str], float]"]:
-    """Dirty paths (most recently modified first) plus the mtime lookup used to
-    order them, so callers can filter on recency without re-stat'ing."""
+def dirty_files() -> list[str]:
+    """Dirty paths, most recently modified first."""
     porcelain = _git("status", "--porcelain")
     files = []
     for line in porcelain.splitlines():
@@ -257,36 +251,20 @@ def dirty_files() -> tuple[list[str], "Callable[[str], float]"]:
         except OSError:
             return 0.0
 
-    return sorted(files, key=mtime, reverse=True)[:8], mtime
-
-
-def focus_files() -> list[str]:
-    """The few files being actively edited right now.
-
-    A repo can sit with a dozen dirty files for days, so plain dirtiness says
-    nothing about attention. Only recently-touched ones do — and the recency
-    window matters: without it this always returns focus_file_count files, so
-    long-stale paths would leak in and produce false "warm" matches.
-    """
-    files, mtime = dirty_files()
-    conf = cfg()
-    cutoff = time.time() - conf["focus_window_minutes"] * 60
-    return [f for f in files if mtime(f) >= cutoff][:conf["focus_file_count"]]
+    return sorted(files, key=mtime, reverse=True)[:8]
 
 
 def capture_context() -> dict:
-    dirty, _ = dirty_files()
     return {
-        "focus_files": focus_files(),
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD").strip(),
         "sha": _git("rev-parse", "--short", "HEAD").strip(),
         "diff_stat": _git("diff", "--shortstat").strip(),
-        "dirty_files": dirty,
+        "dirty_files": dirty_files(),
         "cwd": str(Path.cwd()),
     }
 
 
-# ------------------------------------------------------------ dedupe / locality
+# ----------------------------------------------------------------------- dedupe
 
 def tokens(text: str) -> set[str]:
     words = re.findall(r"[a-z0-9_]+", text.lower())
@@ -300,12 +278,24 @@ def similarity(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+def duplicates(new: dict, existing: dict) -> bool:
+    """True when `new` should merge into `existing` rather than be added.
+
+    Steps of different plans never merge: "write the tests" in +auth and in
+    +billing are two pieces of work, and merging would drop one plan's step.
+    """
+    a, b = new.get("plan"), existing.get("plan")
+    if a and b and a != b:
+        return False
+    return similarity(new["text"], existing["text"]) >= cfg()["dedupe_threshold"]
+
+
 def subject_outside_repo(todo: dict) -> bool:
     """True when the todo's recorded subject is a path outside its capture repo.
 
-    The git context and the staleness signal both describe the repo you were in.
-    When the subject lives elsewhere, they describe where you were standing, not
-    what the todo is about, so they must not be presented as evidence about it.
+    The git context describes the repo you were in. When the subject lives
+    elsewhere, it describes where you were standing, not what the todo is about,
+    so it must not be presented as evidence about it.
     """
     subject = todo.get("about") or ""
     if not subject.startswith(("/", "~")):
@@ -314,30 +304,57 @@ def subject_outside_repo(todo: dict) -> bool:
     return bool(project) and not str(Path(subject).expanduser()).startswith(project)
 
 
-def is_warm(todo: dict, current_focus: list[str]) -> bool:
-    """True when the todo was captured while editing something still in focus."""
-    return bool(set(todo.get("focus_files") or []) & set(current_focus))
-
-
-def clusters(items: list[dict]) -> dict[str, list[dict]]:
-    """Group todos captured while editing the same file."""
-    by_file: dict[str, list[dict]] = {}
-    for todo in items:
-        for path in todo.get("focus_files") or []:
-            by_file.setdefault(path, []).append(todo)
-    return {p: g for p, g in by_file.items() if len(g) > 1}
-
-
 def open_todos(state: dict) -> list[dict]:
     return [t for t in state["todos"] if t["status"] == "open"]
 
 
+# --------------------------------------------------------------------- plans
+
+def split_plan(text: str) -> tuple[str | None, str]:
+    """Peel a leading `+name` off captured text: "+docs add a changelog".
+
+    Only a leading token counts, so "support the +x flag" stays plain text.
+    """
+    match = PLAN_PREFIX.match(text)
+    if not match:
+        return None, text
+    return match.group(1).lower(), text[match.end():]
+
+
+def label(todo: dict) -> str:
+    """A todo's text as it was typed, plan prefix included."""
+    return f"+{todo['plan']} {todo['text']}" if todo.get("plan") else todo["text"]
+
+
+def plan_steps(state: dict, name: str) -> list[dict]:
+    """A plan's steps in capture order, which is the order they run in."""
+    return sorted((t for t in state["todos"] if t.get("plan") == name),
+                  key=lambda t: t["id"])
+
+
+def plan_names(state: dict) -> list[str]:
+    """Plans in this session, ordered by their earliest step."""
+    names: list[str] = []
+    for todo in sorted(state["todos"], key=lambda t: t["id"]):
+        if todo.get("plan") and todo["plan"] not in names:
+            names.append(todo["plan"])
+    return names
+
+
+def parse_ids(raw: str) -> list[int]:
+    ids: list[int] = []
+    for part in re.split(r"[\s,]+", raw.strip()):
+        if part and int(part) not in ids:
+            ids.append(int(part))
+    return ids
+
+
 # ----------------------------------------------------------------- rendering
 
-def render(todo: dict, current: list[str], verbose: bool = False) -> str:
-    shared = sorted(set(todo.get("focus_files") or []) & set(current))
-    warm = f" [warm: {shared[0]}]" if shared else ""
-    line = f"  #{todo['id']} {todo['text']}{warm}"
+def render(todo: dict, verbose: bool = False,
+           lead: str = "  ", show_plan: bool = True) -> str:
+    text = label(todo) if show_plan else todo["text"]
+    line = f"{lead}#{todo['id']} {text}"
     if todo.get("mentions", 1) > 1:
         line += f" (raised {todo['mentions']}x)"
     if not verbose:
@@ -353,8 +370,6 @@ def render(todo: dict, current: list[str], verbose: bool = False) -> str:
     where = " ".join(x for x in [todo.get("branch"), todo.get("sha")] if x)
     if where:
         bits.append(f"      captured on: {where} at {todo.get('created', '?')}")
-    if todo.get("focus_files"):
-        bits.append(f"      you were editing: {', '.join(todo['focus_files'])}")
     if todo.get("diff_stat"):
         bits.append(f"      diff then: {todo['diff_stat']}")
     return "\n".join([line] + bits)
@@ -363,14 +378,16 @@ def render(todo: dict, current: list[str], verbose: bool = False) -> str:
 # ------------------------------------------------------------------- commands
 
 def cmd_add(state: dict, text: str) -> str:
-    text = " ".join(text.split())
+    plan, text = split_plan(" ".join(text.split()))
     current = open_todos(state)
     for existing in current:
-        if similarity(text, existing["text"]) >= cfg()["dedupe_threshold"]:
+        if duplicates({"text": text, "plan": plan}, existing):
             existing["mentions"] = existing.get("mentions", 1) + 1
             existing.update(capture_context())
+            if plan and not existing.get("plan"):
+                existing["plan"] = plan
             return (
-                f"MERGED into existing todo #{existing['id']}: {existing['text']}\n"
+                f"MERGED into existing todo #{existing['id']}: {label(existing)}\n"
                 f"(raised {existing['mentions']}x — context refreshed, no duplicate created)"
             )
 
@@ -382,6 +399,7 @@ def cmd_add(state: dict, text: str) -> str:
         "mentions": 1,
         "surfaced": 0,
         "note": None,
+        "plan": plan,
         "done_at": None,
     }
     todo.update(capture_context())
@@ -389,7 +407,10 @@ def cmd_add(state: dict, text: str) -> str:
     state["next_id"] += 1
 
     n = len(open_todos(state))
-    lines = [f"SAVED todo #{todo['id']}: {todo['text']}"]
+    lines = [f"SAVED todo #{todo['id']}: {label(todo)}"]
+    if plan:
+        left = sum(t["status"] == "open" for t in plan_steps(state, plan))
+        lines.append(f"plan +{plan}: now {left} open step(s)")
     if todo["branch"] or todo["dirty_files"]:
         # omitted entirely outside a git repo, rather than printing "context:  @  "
         where = " @ ".join(x for x in (todo["branch"], todo["sha"]) if x)
@@ -400,20 +421,11 @@ def cmd_add(state: dict, text: str) -> str:
 
 
 def cmd_list(state: dict) -> str:
-    current = focus_files()
     items = open_todos(state)
     if not items:
         return "No open todos in this session."
     out = [f"{len(items)} open todo(s) in this session:"]
-    out += [render(t, current, verbose=True) for t in items]
-    grouped = clusters(items)
-    if grouped:
-        path, group = max(grouped.items(), key=lambda kv: len(kv[1]))
-        ids = ", ".join(f"#{t['id']}" for t in group)
-        out.append(
-            f"\nLocality: {ids} were captured while editing {path} — "
-            f"cheaper to do together than to reload that context twice."
-        )
+    out += [render(t, verbose=True) for t in items]
     if state.get("muted"):
         out.append("\n(reminders are muted for this session)")
     return "\n".join(out)
@@ -421,7 +433,6 @@ def cmd_list(state: dict) -> str:
 
 def cmd_next(state: dict, target: str | None = None,
              detail: str | None = None) -> str:
-    current = focus_files()
     items = open_todos(state)
     if not items:
         return "No open todos in this session."
@@ -438,21 +449,92 @@ def cmd_next(state: dict, target: str | None = None,
             extra = " ".join(detail.split())
             pick["detail"] = f"{pick['detail']}; {extra}" if pick.get("detail") else extra
     else:
-        items.sort(key=lambda t: (not is_warm(t, current), -t.get("mentions", 1), t["id"]))
+        # most-raised first; ties break toward older ids
+        items.sort(key=lambda t: (-t.get("mentions", 1), t["id"]))
         pick = items[0]
-    stale = ""
+    note = ""
     if subject_outside_repo(pick):
-        stale = (
+        note = (
             "\nNOTE: this todo's subject is outside the repo it was captured in, so the "
-            "branch and file context above describe where the idea occurred, not what it "
+            "branch and commit above describe where the idea occurred, not what it "
             "is about. Work from `about:` and `why:`."
         )
-    elif pick.get("focus_files") and not is_warm(pick, current):
-        stale = (
-            "\nSTALENESS CHECK: you are no longer editing the files this was captured "
-            "against — verify it is still needed before starting."
-        )
-    return f"NEXT todo:\n{render(pick, current, verbose=True)}{stale}"
+    return f"NEXT todo:\n{render(pick, verbose=True)}{note}"
+
+
+def no_plans_hint() -> str:
+    return (
+        "No plans in this session. Park a step with `/todo +<name> <idea>`, "
+        "or group open todos with `/todo tag <ids> +<name>`."
+    )
+
+
+def cmd_plans(state: dict) -> str:
+    names = plan_names(state)
+    if not names:
+        return no_plans_hint()
+    lines = [f"{len(names)} plan(s) in this session:"]
+    for name in names:
+        steps = plan_steps(state, name)
+        left = sum(t["status"] == "open" for t in steps)
+        done = sum(t["status"] == "done" for t in steps)
+        status = "complete" if not left else f"{left} open, {done} done"
+        lines.append(f"  +{name}  {status}")
+    lines += ["", "`/todo plan +<name>` shows one; `/todo execute +<name>` works through it."]
+    return "\n".join(lines)
+
+
+def cmd_execute_which(state: dict) -> str:
+    """`/todo execute` with no plan named."""
+    names = plan_names(state)
+    if not names:
+        return no_plans_hint()
+    listed = ", ".join(f"+{n}" for n in names)
+    return f"EXECUTE: which plan? {listed}\n\nStart one with `/todo execute +<name>`."
+
+
+def cmd_plan(state: dict, name: str, execute: bool = False) -> str:
+    """Show a plan's open steps in order, or hand them over to be executed."""
+    name = name.lower()
+    steps = plan_steps(state, name)
+    if not steps:
+        names = ", ".join(f"+{n}" for n in plan_names(state))
+        return f"No plan +{name}. " + (f"Plans: {names}." if names else "No plans yet.")
+
+    pending = [t for t in steps if t["status"] == "open"]
+    done = [t for t in steps if t["status"] == "done"]
+    if not pending:
+        return f"Plan +{name} has no open steps — all {len(done)} done."
+
+    head = (
+        f"EXECUTE plan +{name} — {len(pending)} step(s), in capture order:" if execute else
+        f"PLAN +{name} — {len(pending)} open step(s), {len(done)} done:"
+    )
+    out = [head]
+    out += [render(t, verbose=True, lead=f"  {i}. ", show_plan=False)
+            for i, t in enumerate(pending, 1)]
+    if done:
+        out.append("\nalready done: " + ", ".join(f"#{t['id']} {t['text']}" for t in done))
+    if not execute:
+        out.append(f"\n`/todo execute +{name}` works through these in this order.")
+    return "\n".join(out)
+
+
+def cmd_tag(state: dict, ids: list[int], name: str | None) -> str:
+    """Put open todos into a plan, or take them out of one (name=None)."""
+    items = {t["id"]: t for t in open_todos(state)}
+    missing = [i for i in ids if i not in items]
+    if missing:
+        wanted = ", ".join(f"#{i}" for i in missing)
+        have = ", ".join(f"#{i}" for i in items) or "none"
+        return f"No open todo {wanted}. Open: {have}."
+    for i in ids:
+        items[i]["plan"] = name.lower() if name else None
+    which = ", ".join(f"#{i}" for i in ids)
+    if not name:
+        return f"Untagged {which} — no longer part of a plan."
+    left = sum(t["status"] == "open" for t in plan_steps(state, name.lower()))
+    return f"Tagged {which} into plan +{name.lower()} ({left} open step(s))."
 
 
 def cmd_resolve(state: dict, ident: str, status: str) -> str:
@@ -486,22 +568,21 @@ def cmd_help() -> str:
 CAPTURE
   /todo <idea>          Park it. The write happens before Claude reads anything,
                         so it cannot derail what you were doing. Records the
-                        branch, commit, diff stat and the files you were just
-                        editing. A near-duplicate of an existing todo merges
-                        into it (marked "raised Nx") instead of adding a second.
+                        branch, commit and diff stat. A near-duplicate of an
+                        existing todo merges into it (marked "raised Nx")
+                        instead of adding a second.
 
 REVIEW
   /todo                 This session's open todos, with the context each was
-                        captured in. A [warm: file] marker means it was parked
-                        while you were editing something you still are.
+                        captured in.
   /todo list            Same as bare /todo.
   /todo sessions        Other sessions of this repo holding open todos,
                         including sibling worktrees. Grouped as s1, s2, … for
                         `adopt`.
 
 DO
-  /todo next            Start the top todo. Ones touching files you are already
-                        editing come first; ties break toward older ids.
+  /todo next            Start the top todo: the one raised most often, with
+                        ties breaking toward older ids.
   /todo 4               Start #4 specifically. `/todo next 4` is identical.
   /todo 4 <detail>      Start #4 and attach scope for this run — e.g.
   /todo next 4 <detail> "/todo 7 update it with what changed this session".
@@ -513,8 +594,24 @@ DO
   /todo done 4          Mark #4 complete.
   /todo drop 4          Discard #4.
 
+PLANS
+  /todo +docs <idea>    Park it as the next step of plan "docs". Park a bigger
+                        piece of work step by step, then run it in one go.
+  /todo tag 2 3 +docs   Put open todos into a plan after the fact. Tagging a
+                        todo that is already in another plan moves it.
+  /todo untag 2         Take it back out.
+  /todo plans           Plans in this session, with open / done counts.
+  /todo plan +docs      Review one: its open steps in order, with the context
+  /todo +docs           each was captured in.
+  /todo execute +docs   Work through its open steps, in capture order, marking
+                        each done as it lands.
+                        A plan is always written "+name", which is what keeps
+                        ideas safe: "/todo plan docs for next meeting" parks,
+                        because no "+" names a plan.
+                        Steps in different plans never merge as duplicates.
+
 EDIT
-  /todo edit 4          Change #4 a field at a time — text, why, subject,
+  /todo edit 4          Change #4 a field at a time — text, why, subject, plan,
                         status — each step offering a proposed value you can
                         accept or overtype. `/todo edit` alone asks which todo.
                         Editing keeps the id and the captured git context; that
@@ -526,6 +623,7 @@ MERGE
   /todo adopt 3         Move that one into this session.
   /todo adopt s2        Move everything from source s2 (see /todo sessions).
   /todo adopt all       Move every adoptable todo in.
+  /todo adopt +docs     Move every step of plan "docs" in.
                         Adopting *moves* a todo, so it can never be resolved in
                         two places, and anything duplicating a todo already here
                         merges rather than arriving as a twin.
@@ -549,6 +647,7 @@ which is what keeps these as ideas rather than commands:
   /todo next steps: add tests for the helpers
   /todo edit the retry logic
   /todo 404 handler needs a test
+  /todo plan docs for next meeting
 An id that does not exist reports the open ids instead of parking itself.
 
 FILES
@@ -585,6 +684,7 @@ def cmd_edit(state: dict, target: str | None = None) -> str:
         f"  detail {todo.get('detail') or '(empty)'}",
         f"  why    {todo.get('note') or '(empty)'}",
         f"  about  {todo.get('about') or '(empty)'}",
+        f"  plan   {'+' + todo['plan'] if todo.get('plan') else '(empty)'}",
         f"  status {todo['status']}",
         "",
         f"Captured on {where or 'no git context'} at {todo.get('created', '?')} — "
@@ -616,6 +716,15 @@ def cmd_set(state: dict, ident: str, fields: dict[str, str]) -> str:
                 if value != todo.get(key):
                     todo[key] = value
                     changed.append(flag if value else f"{flag} (cleared)")
+        if "plan" in fields:
+            # "+docs" and "docs" both mean the same plan; empty clears it
+            raw = fields["plan"].strip().lstrip("+")
+            if raw and not re.fullmatch(PLAN_NAME, raw):
+                return f"a plan name must start with a letter (got {fields['plan']!r})."
+            value = raw.lower() or None
+            if value != todo.get("plan"):
+                todo["plan"] = value
+                changed.append(f"plan -> +{value}" if value else "plan (cleared)")
         if "status" in fields:
             value = fields["status"].strip().lower()
             value = "dropped" if value == "drop" else value
@@ -795,9 +904,11 @@ def _move_one(state: dict, path: Path, todo: dict) -> str | None:
 
     # merging shouldn't create twins of something already parked here
     for existing in open_todos(state):
-        if similarity(todo["text"], existing["text"]) >= cfg()["dedupe_threshold"]:
+        if duplicates(todo, existing):
             existing["mentions"] = existing.get("mentions", 1) + todo.get("mentions", 1)
-            return f"merged into #{existing['id']}: {existing['text']}"
+            if todo.get("plan") and not existing.get("plan"):
+                existing["plan"] = todo["plan"]
+            return f"merged into #{existing['id']}: {label(existing)}"
 
     moved = dict(todo)
     moved.update({
@@ -808,7 +919,7 @@ def _move_one(state: dict, path: Path, todo: dict) -> str | None:
     })
     state["todos"].append(moved)
     state["next_id"] += 1
-    return f"#{moved['id']}: {moved['text']}"
+    return f"#{moved['id']}: {label(moved)}"
 
 
 def _sources(candidates: list[tuple[Path, dict]]) -> list[Path]:
@@ -831,11 +942,12 @@ def cmd_sessions(state: dict) -> str:
         items = [t for p, t in candidates if p == path]
         lines.append(f"  s{i}  {source_label(path, root)} — {len(items)} open")
         for todo in items:
-            lines.append(f"        {todo['text']}")
+            lines.append(f"        {label(todo)}")
     lines += [
         "",
         "`/todo adopt s<n>` merges one session's todos into this one;",
-        "`/todo adopt` numbers them individually; `/todo adopt all` takes everything.",
+        "`/todo adopt` numbers them individually; `/todo adopt all` takes everything;",
+        "`/todo adopt +<plan>` takes every step of one plan.",
     ]
     return "\n".join(lines)
 
@@ -849,10 +961,11 @@ def cmd_adopt(state: dict, target: str | None = None) -> str:
     if target is None:
         lines = ["Adoptable todos from other sessions:"]
         for i, (path, todo) in enumerate(candidates, 1):
-            lines.append(f"  {i}. {todo['text']}  ({source_label(path, root)})")
+            lines.append(f"  {i}. {label(todo)}  ({source_label(path, root)})")
         lines += [
             "",
             "`/todo adopt <n>` moves one in, `/todo adopt all` moves all,",
+            "`/todo adopt +<plan>` moves one plan's steps,",
             "`/todo sessions` groups them by session for `/todo adopt s<n>`.",
         ]
         return "\n".join(lines)
@@ -860,6 +973,12 @@ def cmd_adopt(state: dict, target: str | None = None) -> str:
     target = target.lower()
     if target == "all":
         chosen, what = candidates, f"all {len(candidates)} todo(s)"
+    elif target.startswith("+"):
+        name = target[1:]
+        chosen = [(p, t) for p, t in candidates if t.get("plan") == name]
+        if not chosen:
+            return f"No open steps of plan +{name} in other sessions of this repo."
+        what = f"{len(chosen)} step(s) of plan +{name}"
     elif target.startswith("s"):
         order = _sources(candidates)
         index = int(target[1:])
@@ -1010,7 +1129,6 @@ def hook_nudge(payload: dict) -> None:
     if not eligible:
         return bail()
 
-    current = focus_files()
     shown = eligible[:conf["max_nudge_items"]]
     for todo in shown:
         todo["surfaced"] = todo.get("surfaced", 0) + 1
@@ -1018,7 +1136,7 @@ def hook_nudge(payload: dict) -> None:
     state["last_nudge_at"] = now_ts
     save(path, state)
 
-    body = "\n".join(render(t, current) for t in shown)
+    body = "\n".join(render(t) for t in shown)
     emit("UserPromptSubmit", f"{REMINDER_FRAME}\n\n{body}\n\n(`/todo` lists them, `/todo next` starts one.)")
 
 
@@ -1036,8 +1154,7 @@ def hook_resurface(payload: dict) -> None:
         state = load(path, sid, root)
         items = open_todos(state)
         if items and not state.get("muted"):
-            current = focus_files()
-            body = "\n".join(render(t, current, verbose=True) for t in items)
+            body = "\n".join(render(t, verbose=True) for t in items)
             emit("SessionStart", (
                 f"{REMINDER_FRAME} They survived a `{source}`, so the conversation "
                 f"detail around them may be gone.\n\n{body}\n\n"
@@ -1054,7 +1171,7 @@ def hook_resurface(payload: dict) -> None:
         return
 
     lines = [
-        f"  {todo['text']} — parked {todo.get('created', '?')} on "
+        f"  {label(todo)} — parked {todo.get('created', '?')} on "
         f"{todo.get('branch') or 'unknown branch'} ({source_label(p, root)})"
         for p, todo in carried[:5]
     ]
@@ -1069,10 +1186,17 @@ def hook_resurface(payload: dict) -> None:
 # ------------------------------------------------------------------- dispatch
 
 _CFG_KEYS = "|".join(sorted(DEFAULTS, key=len, reverse=True))
+_IDS = r"\d+ (?: (?: \s*,\s* | \s+ ) \d+ )*"
 
 SUBCOMMANDS = re.compile(
     rf"""^(?:
         (?P<list>list)
+      | (?P<plans>plans?)
+      | (?P<plan_verb>plans?|execute) \s+ \+ (?P<plan_name>{PLAN_NAME})
+      | (?P<execute>execute)
+      | \+ (?P<bare_plan>{PLAN_NAME})
+      | (?P<tag>tag) \s+ (?P<tag_ids>{_IDS}) \s+ \+? (?P<tag_name>{PLAN_NAME})
+      | (?P<untag>untag) \s+ (?P<untag_ids>{_IDS})
       | next \s+ (?P<next_id>\d+) (?: \s+ (?P<next_detail>.+) )?
       | (?P<next>next)
       | (?P<pick>\d+) (?: \s+ (?P<pick_detail>.+) )?
@@ -1083,7 +1207,7 @@ SUBCOMMANDS = re.compile(
       | (?P<help>help)
       | (?P<edit>edit) (?: \s+ (?P<edit_id>\d+) )?
       | (?P<sessions>sessions)
-      | (?P<adopt>adopt) (?: \s+ (?P<adopt_id>\d+|all|s\d+) )?
+      | (?P<adopt>adopt) (?: \s+ (?P<adopt_id>\d+|all|s\d+|\+{PLAN_NAME}) )?
     )$""",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -1104,6 +1228,19 @@ def dispatch(raw: str) -> str:
         g = match.groupdict()
         if g["list"]:
             result = cmd_list(state)
+        elif g["plans"]:
+            result = cmd_plans(state)
+        elif g["plan_verb"]:
+            result = cmd_plan(state, g["plan_name"],
+                              execute=g["plan_verb"].lower() == "execute")
+        elif g["execute"]:
+            result = cmd_execute_which(state)
+        elif g["bare_plan"]:
+            result = cmd_plan(state, g["bare_plan"])
+        elif g["tag"]:
+            result = cmd_tag(state, parse_ids(g["tag_ids"]), g["tag_name"])
+        elif g["untag"]:
+            result = cmd_tag(state, parse_ids(g["untag_ids"]), None)
         elif g["pick"] and g["pick_detail"]:
             # "N <text>" is genuinely ambiguous: starting #N with a brief, or
             # parking an idea that happens to begin with a number. Resolve it on
@@ -1173,7 +1310,7 @@ def main() -> int:
         root, sid = project_root(), session_id()
         path = state_path(sid, root)
         state = load(path, sid, root)
-        fields = parse_flags(argv[2:], {"text", "why", "about", "detail", "status"})
+        fields = parse_flags(argv[2:], {"text", "why", "about", "detail", "plan", "status"})
         print(cmd_set(state, argv[1], fields))
         save(path, state)
         return 0

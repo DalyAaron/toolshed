@@ -1,7 +1,7 @@
 ---
 name: todo
 description: Park an idea for later in this session without derailing current work. Also lists, starts, or resolves parked ideas.
-argument-hint: "<idea to park> | list | next | edit N | done N | help"
+argument-hint: "<idea to park> | list | next | edit N | done N | plan | help"
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/todo.py *)
 ---
@@ -50,6 +50,11 @@ Match the first word of the output above.
    about and stop — an honest "we were working on X" beats a confident guess that
    sends you to the wrong file later.
 
+   When the output has a `plan +<name>` line, the todo is one step of a larger
+   piece of work that will later run as a batch. If the conversation shows how
+   this step fits — what it depends on, what it unblocks — say so in the note;
+   that is what whoever runs the plan will lack.
+
    Skip the call entirely only when the todo is self-explanatory *and* the session
    holds no relevant context.
 3. **Return immediately to whatever you were doing before.** If you were
@@ -58,9 +63,7 @@ Match the first word of the output above.
 
 ### `No open todos` / `N open todo(s)` — a listing
 
-Relay it as-is, compactly. If the output includes a `Locality:` line, keep it —
-batching todos that touch already-dirty files is the cheapest way to do them.
-Do not start any of them unless asked.
+Relay it as-is, compactly. Do not start any of them unless asked.
 
 ### `NEXT todo:` — the user is committing to this one
 
@@ -76,13 +79,48 @@ Now you *do* engage:
    they were added.
 2. `about:` is authoritative for *what* the todo concerns. It was resolved from
    the conversation that produced the todo, so when it disagrees with the branch
-   and file context, believe `about:` — those describe where the idea occurred,
-   not what it concerns.
-3. If there is a `STALENESS CHECK` line, verify the work is still needed before
-   touching anything, and say what you found.
-4. Add the todo to your `TodoWrite` task list — this is the handoff point from
+   and commit it was captured on, believe `about:` — those describe where the
+   idea occurred, not what it concerns.
+3. Add the todo to your `TodoWrite` task list — this is the handoff point from
    parking lot to active plan.
-5. Orient yourself from the captured context, then start the work.
+4. Orient yourself from the captured context, then start the work.
+
+### `N plan(s)` / `PLAN +<name>` / `EXECUTE: which plan?` / `Plan +<name> has no open steps` / `No plan` — a plan listing
+
+Relay it as-is, compactly. `PLAN` is the review step before running, so keep
+the step order and numbering exactly as printed. Do not start any step unless
+asked.
+
+### `EXECUTE plan +<name>` — the user is committing to the whole plan
+
+This is `NEXT` for every step at once. The steps *are* the plan — your job is to
+execute it, not to re-plan it.
+
+1. Read every step before starting any. Each step's fields mean what they mean
+   under `NEXT`: `detail:` is that step's brief, and `about:` is authoritative
+   for what it concerns.
+2. Keep the printed order unless a step plainly depends on a later one; then
+   move it and say so in one line. Don't reorder for taste — capture order is
+   the order the user thought of the work in.
+3. Put all the steps into your `TodoWrite` task list at once, in that order.
+   That list is the plan for this run.
+4. Work through them one at a time. As each step is finished and verified, mark
+   it done straight away:
+
+   ```
+   ${CLAUDE_SKILL_DIR}/todo.py dispatch done <id>
+   ```
+
+   One call per step, as it lands, never batched at the end — so an
+   interruption leaves the store accurate and a second `/todo execute` resumes
+   where this one stopped.
+5. A step that turns out to be done already: mark it done and say so. A step
+   that is blocked or no longer makes sense: leave it open, say why in one line,
+   and carry on with the steps that don't depend on it. Never drop a step the
+   user parked on your own judgement.
+6. Finish with a short summary: which steps landed, which are still open and why.
+
+`already done:` lists steps completed earlier. It is context, not work.
 
 ### `EDIT todo #N — current values:` — walk the user through changing it
 
@@ -90,7 +128,7 @@ Run a stepped edit with **one** `AskUserQuestion` call, then apply it with **one
 `todo.py set` call. Do not ask in prose and do not ask twice.
 
 Build the question list from the fields worth changing, in the order the read-out
-prints them: `text`, `detail`, `why`, `about`, `status`. For each, the options
+prints them: `text`, `detail`, `why`, `about`, `plan`, `status`. For each, the options
 are:
 
 1. **Keep current** — show the existing value, or "(empty)" so it's obvious.
@@ -109,11 +147,12 @@ value is fine — a question with only "keep current" wastes a step.
 Then apply exactly what came back:
 
 ```
-${CLAUDE_SKILL_DIR}/todo.py set <id> --text <…> --detail <…> --why <…> --about <…> --status <…>
+${CLAUDE_SKILL_DIR}/todo.py set <id> --text <…> --detail <…> --why <…> --about <…> --plan <…> --status <…>
 ```
 
-Pass **only the fields that changed**. An empty value clears `detail`, `why` or
-`about`; `text` cannot be emptied. `captured on` is deliberately not editable.
+Pass **only the fields that changed**. An empty value clears `detail`, `why`,
+`about` or `plan`; `text` cannot be emptied. A plan name may be written with or
+without its `+`. `captured on` is deliberately not editable.
 
 Report the one line `set` prints and stop.
 
@@ -128,7 +167,7 @@ commentary — the user asked for the reference, not an explanation of it.
 Ask which one with a single `AskUserQuestion` listing the open todos, then start
 the flow above for the id chosen.
 
-### `Completed` / `Dropped` / `Updated` / `Reminders muted` / `Set <key>` — a state change
+### `Completed` / `Dropped` / `Updated` / `Tagged` / `Untagged` / `Reminders muted` / `Set <key>` — a state change
 
 One line confirming it. Nothing else.
 
