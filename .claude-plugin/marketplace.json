@@ -28,7 +28,7 @@
       "name": "quest-log",
       "source": "./quest-log",
       "description": "/quests \u2014 Claude keeps a quest log of what you asked and where it's up to.",
-      "version": "0.2.0",
+      "version": "1.0.0",
       "author": {
         "name": "Aaron Daly"
       },

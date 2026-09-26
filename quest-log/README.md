@@ -197,12 +197,15 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-0.2.0, early. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
+1.0.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
 open.
 
 ## Changelog
 
-### 0.2.0
+### 1.0.0
+
+First stable release. 0.2.0 was published briefly before it with the same
+changes, so they are listed here.
 
 - **One summary line per turn.** Log changes now print as a single line, always
   with emoji: `📜 #1 updated · ✔2 · 🏆 #1 complete · ✨ #2 created "…"`.
