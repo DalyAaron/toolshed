@@ -11,6 +11,7 @@ does: as a subprocess, with hook payloads on stdin.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -73,7 +74,7 @@ class QuestTest(unittest.TestCase):
                    dict(self.env, **env), args).strip()
 
     def state(self, sid=None):
-        slug = "".join(c if c.isalnum() else "-" for c in self.root)
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", self.root)
         path = self.tmp / "quests" / slug / "{}.json".format(sid or self.sid)
         return json.loads(path.read_text())
 
@@ -147,6 +148,21 @@ class Verbs(QuestTest):
         quest = self.state()["quests"][0]
         self.assertEqual((quest["asks"], quest["outcome"]), ([1, 2], "blue"))
         self.assertTrue(any("Reopened" in j["text"] for j in quest["journal"]))
+
+    def test_finished_line_shows_outcome_and_later_asks(self):
+        self.start()
+        self.q("turn-in", "1")
+        self.assertIn("✔ #1 Build the thing — turned in", self.quests())
+        self.prompt("also fix the typos")
+        self.q("link", "1", "2")
+        self.q("turn-in", "1", "--outcome", "built it; " + "typos checked, none found " * 3)
+        log = self.quests()
+        self.assertIn("✔ #1 Build the thing (+1 later ask) — built it; typos checked", log)
+        self.assertIn("…", log)
+        self.prompt("and again")
+        self.q("link", "1", "3")
+        self.q("abandon", "1")
+        self.assertIn("✗ #1 Build the thing (+2 later asks) — abandoned", self.quests())
 
     def test_retrack_prefers_active_then_awaiting(self):
         self.start()
@@ -352,7 +368,7 @@ class TodoHandoff(QuestTest):
 
     def test_foreign_store_is_refused(self):
         self.start()
-        slug = "".join(c if c.isalnum() else "-" for c in self.root)
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", self.root)
         store = self.tmp / "todos" / slug / "{}.json".format(self.sid)
         store.parent.mkdir(parents=True)
         store.write_text(json.dumps({"items": []}))

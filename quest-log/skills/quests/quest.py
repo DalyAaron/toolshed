@@ -428,14 +428,19 @@ def render_log(state: dict) -> str:
     if closed:
         out += ["", g["finished"]]
         for quest in closed:
+            later = len(quest.get("inherited_asks") or []) + len(quest["asks"]) - 1
+            title = quest["title"] + (f" (+{later} later ask{'s' * (later > 1)})" if later > 0 else "")
             if quest["status"] == "done":
-                out.append(f"  {g['done']} #{quest['id']} {quest['title']} — {g['turned_in']}")
+                # The outcome, not just "turned in": asks folded into a quest
+                # that then finished were otherwise invisible from the log.
+                out.append(f"  {g['done']} #{quest['id']} {title} — "
+                           + (clip(quest["outcome"]) if quest.get("outcome") else g["turned_in"]))
             elif quest["status"] == "parked":
-                out.append(f"  {g['parked']} #{quest['id']} {quest['title']} — /todo #{quest.get('todo')}")
+                out.append(f"  {g['parked']} #{quest['id']} {title} — /todo #{quest.get('todo')}")
             elif quest["status"] == "adopted":
-                out.append(f"  {g['parked']} #{quest['id']} {quest['title']} — {g['adopted']}")
+                out.append(f"  {g['parked']} #{quest['id']} {title} — {g['adopted']}")
             else:
-                out.append(f"  {g['failed']} #{quest['id']} {quest['title']} — {g['abandoned']}")
+                out.append(f"  {g['failed']} #{quest['id']} {title} — {g['abandoned']}")
 
     out += ["", "`/quests <n>` shows a full entry · `/quests help` for everything else"]
     if cfg()["style"] == "rpg" and cfg_sources()["style"] == "default":

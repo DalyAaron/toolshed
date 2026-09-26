@@ -27,7 +27,7 @@ RUMORS  (noticed, not acted on)
   r1 todo.py adopt path swallows errors silently
 
 FINISHED
-  ✔ #2 Fix README typo — turned in
+  ✔ #2 Fix README typo (+1 later ask) — fixed 3 typos; also checked CHANGELOG
 ```
 
 As the log changes, one-line notices appear in your terminal
@@ -39,6 +39,40 @@ As the log changes, one-line notices appear in your terminal
 **Claude's** record of what you asked for and how far it has got. They connect
 in one place. Anything on the log can be sent to `/todo`, but only when you ask
 or agree.
+
+### Together: a rumor becomes a todo
+
+From a trial run. While making a small stack module, Claude noticed
+`__pycache__/` was untracked. You hadn't asked for that, so it didn't fix it.
+It noted it as a rumor instead:
+
+```
+📜 QUEST LOG — qtrial · turn 5
+
+RUMORS  (noticed, not acted on)
+  r1 __pycache__/ is untracked; a .gitignore would keep it out of commits
+
+FINISHED
+  ✔ #1 Stack module with tests (+2 later asks) — pop returns None on empty; 6/6 tests pass; committed; docstrings chec…
+  ✔ #2 Add size to Stack (+1 later ask) — size() added returning len(self); 7/7 tests pass; uncommitted
+```
+
+Tell Claude "move rumors to todo" (or run `/quests todo r1`) and it goes to
+your parking lot. It carries where it came from and the commit it was noticed
+on:
+
+```
+❯ /todo list
+
+1 open todo in this session:
+- #1 __pycache__/ is untracked; a .gitignore would keep it out of commits
+  - why: Noticed by Claude (quest-log, turn 4) and not acted on.
+  - captured on: main f4e6557 at 2026-09-26T12:24:03
+```
+
+The rumor leaves the log, so it isn't listed twice. It's yours now, for
+`/todo next` whenever you want it. Quests and single objectives move the same
+way (`/quests todo 2`, `/quests todo 2.3`).
 
 ## Install
 
