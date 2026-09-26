@@ -201,8 +201,17 @@ their words and turn, and the journal says where the quest came from.
 objective, and how many quests await the user, or nothing. It reads the session
 and directory from the status-line JSON, since that command runs outside the
 session's environment. Plugins can only ship `agent` and `subagentStatusLine`
-in their `settings.json`, so the user has to wire it in; the README gives a
-command that picks the newest cached version, so it survives updates.
+in their `settings.json`, so `/quests statusline` writes it into the user's
+own `settings.json` when they ask (the command is the consent; nothing is
+installed on its own). The command it writes picks the newest version under
+the plugin cache (`ls -d …/quest-log/*/ | sort -V | tail -1`), so it survives
+updates; from a checkout it points at the checkout. An existing status line is
+kept: both get the same stdin and their output is joined with ` · `, and the
+original entry is saved in quest-log's `config.json` as `replaced_statusline`
+so `off` restores it exactly. Every command it writes ends in
+`# quest-log statusline`, which is how it recognises its own. The tests run
+each generated command through `sh`, including one that installs from three
+cached versions and checks the newest one answers.
 
 ## Live view
 

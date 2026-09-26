@@ -1,7 +1,7 @@
 ---
 name: quests
 description: Show the quest log Claude keeps of this session — what was asked, why, what's done, what's left, and what's waiting on the user.
-argument-hint: "[n] | done | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | live | config | help"
+argument-hint: "[n] | done | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | live | statusline [off] | config | help"
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/quest.py *)
 ---
@@ -53,7 +53,7 @@ on with anything you were doing; the pane needs nothing from you.
 
 Relay verbatim in a code block, no commentary.
 
-### `Tracking` / `Sent … to /todo` / `#N abandoned` / `Set <key>` / `Adopted` — a state change
+### `Tracking` / `Sent … to /todo` / `#N abandoned` / `Set <key>` / `Adopted` / `STATUS LINE:` — a state change
 
 One line confirming it. If the user abandoned the quest you were working on,
 stop working on it. An adopted quest is now yours to continue: it's tracked,

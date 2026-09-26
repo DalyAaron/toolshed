@@ -135,6 +135,7 @@ of a log that keeps itself. Either:
 | `/quests adopt [n\|all]` | Continue unfinished quests from earlier sessions of this repo (worktrees included). |
 | `/quests chronicle` | The session as markdown, for a PR description or a handoff. |
 | `/quests live` | The log in a pane beside Claude, redrawn as it works. |
+| `/quests statusline [off]` | Put the tracked quest in your status line, or take it out. |
 | `/quests config` | Settings. |
 | `/quests help` | The full reference. |
 
@@ -180,9 +181,15 @@ Show the tracked quest under the prompt:
 ⚔ Ship quest-log · 3/5 · ▸ Implement hooks · ⏸ 1 awaiting you
 ```
 
-Plugins can't set the status line themselves, so add it to
-`~/.claude/settings.json`. The command finds the newest installed copy, so it
-survives updates:
+Run `/quests statusline` once. Plugins can't set a status line themselves, so
+this adds it to your own `settings.json` (in your `CLAUDE_CONFIG_DIR` if you
+set one, backing the file up first). It points at whichever quest-log version
+is newest, so it keeps working after updates. If you already have a status
+line, it's kept: both run and their output is joined with ` · `.
+`/quests statusline off` puts back exactly what you had.
+
+<details>
+<summary>Setting it up by hand instead</summary>
 
 ```json
 {
@@ -193,10 +200,9 @@ survives updates:
 }
 ```
 
-Use your `CLAUDE_CONFIG_DIR` in place of `~/.claude` if you set one. It prints
-nothing when there's no quest, so it combines with an existing status line:
-run both and join the output, e.g. `echo "$(your-line) $(quest-line)"` with
-the JSON on stdin passed to each (`input=$(cat)` first, then `echo "$input" |`).
+It prints nothing when there's no quest.
+
+</details>
 
 ## Config Settings
 
@@ -233,6 +239,8 @@ open.
   active, rumors, completed. A question waiting on you is shown once, only the
   tracked quest is expanded, and completed quests show the latest three with
   their outcomes (`/quests done` for all of them). `style plain` is unchanged.
+- **`/quests statusline`** sets up the status line for you, alongside any you
+  already have, and `off` undoes it.
 
 ### 1.0.0
 

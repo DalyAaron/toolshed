@@ -499,6 +499,80 @@ class StatusLine(QuestTest):
                          "Build the thing · 1/2 · next: second step · 1 awaiting you")
 
 
+class StatusLineInstall(QuestTest):
+    def settings(self):
+        path = self.tmp / "config" / "settings.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def write_settings(self, data):
+        path = self.tmp / "config" / "settings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+
+    def run_line(self, command):
+        """Run a settings.json statusLine command the way Claude Code does."""
+        payload = json.dumps({"session_id": self.sid, "workspace": {"current_dir": str(self.repo)}})
+        env = {k: v for k, v in self.env.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        return run(["sh", "-c", command], "/", env, payload)
+
+    def test_fresh_install_runs(self):
+        self.start()
+        self.assertIn("STATUS LINE: on, in", self.quests("statusline"))
+        entry = self.settings()["statusLine"]
+        self.assertEqual(entry["type"], "command")
+        self.assertEqual(self.run_line(entry["command"]).strip(), "⚔ Build the thing · 0/2 · ▸ first step")
+        self.assertIn("already on", self.quests("status line on"))
+
+    def test_keeps_and_restores_an_existing_line(self):
+        self.start()
+        mine = {"type": "command", "command": "echo 'my line'  # has a comment", "padding": 1}
+        self.write_settings({"model": "opus", "statusLine": mine})
+        self.assertIn("after your existing one", self.quests("statusline"))
+        settings = self.settings()
+        self.assertEqual(settings["model"], "opus")
+        self.assertEqual(settings["statusLine"]["padding"], 1)
+        self.assertEqual(self.run_line(settings["statusLine"]["command"]),
+                         "my line · ⚔ Build the thing · 0/2 · ▸ first step")
+        backup = self.tmp / "config" / "settings.json.quest-log.bak"
+        self.assertEqual(json.loads(backup.read_text())["statusLine"], mine)
+        self.assertIn("previous status line is back", self.quests("statusline off"))
+        self.assertEqual(self.settings(), {"model": "opus", "statusLine": mine})
+        self.assertIn("isn't in your status line", self.quests("statusline off"))
+
+    def test_empty_quest_line_leaves_other_line_alone(self):
+        self.write_settings({"statusLine": {"type": "command", "command": "echo mine"}})
+        self.quests("statusline")
+        self.assertEqual(self.run_line(self.settings()["statusLine"]["command"]), "mine")
+
+    def test_off_without_previous_removes(self):
+        self.quests("statusline")
+        self.quests("statusline off")
+        self.assertNotIn("statusLine", self.settings())
+
+    def test_unreadable_settings_left_alone(self):
+        path = self.tmp / "config" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{ not json")
+        self.assertIn("couldn't read", self.quests("statusline"))
+        self.assertEqual(path.read_text(), "{ not json")
+
+    def test_installed_copy_picks_newest_version(self):
+        """From the plugin cache, the command follows updates to newer versions."""
+        cache = self.tmp / "config" / "plugins" / "cache" / "toolshed" / "quest-log"
+        for version in ("1.0.0", "1.10.0", "1.9.0"):
+            shutil.copytree(str(PLUGIN), str(cache / version),
+                            ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        self.start()
+        run([sys.executable, str(cache / "1.0.0" / "skills" / "quests" / "quest.py"),
+             "dispatch", "--stdin"], str(self.repo), self.env, "statusline")
+        command = self.settings()["statusLine"]["command"]
+        self.assertIn("sort -V", command)
+        marker = cache / "1.10.0" / "skills" / "quests" / "quest.py"
+        marker.write_text(marker.read_text().replace('parts.append(("⚔ " if rpg else "")',
+                                                     'parts.append(("NEWEST " if rpg else "")'))
+        self.assertTrue(self.run_line(command).startswith("NEWEST Build the thing"))
+
+
 class TodoHandoff(QuestTest):
     def test_rumor_objective_quest_to_todo(self):
         self.start()

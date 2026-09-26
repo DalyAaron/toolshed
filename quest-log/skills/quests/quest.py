@@ -1276,6 +1276,95 @@ def launch_live(sid: str, root: str) -> str:
     return f"LIVE: couldn't open a pane from here. Open a split and run:\n{shell_cmd}"
 
 
+# ------------------------------------------------------ status line install
+
+STATUS_MARK = "quest-log statusline"  # in every command we write, so we can find it again
+
+
+def statusline_command() -> str:
+    """The command for settings.json, pointing at whichever copy is newest.
+
+    Installed from a marketplace, this file lives at
+    .../quest-log/<version>/skills/quests/quest.py and the version directory
+    changes on every update, so the command picks the newest one each time it
+    runs. From a checkout, it points at the checkout.
+    """
+    here = Path(__file__).resolve()
+    version_dir, plugin_dir = here.parents[2], here.parents[3]
+    if plugin_dir.name == "quest-log" and re.fullmatch(r"\d+(\.\d+)*", version_dir.name):
+        script = (f'"$(ls -d {shlex.quote(str(plugin_dir))}/*/ | sort -V | tail -1)'
+                  'skills/quests/quest.py"')
+    else:
+        script = shlex.quote(str(here))
+    return f"python3 {script} statusline  # {STATUS_MARK}"
+
+
+def settings_path() -> Path:
+    return config_dir() / "settings.json"
+
+
+def cmd_statusline_install(on: bool) -> str:
+    """`/quests statusline [on|off]`: the user asking us to edit their settings.
+
+    Plugins can't contribute a statusLine, so this writes the user's own
+    settings.json. An existing status line is kept: both run on the same input
+    and their output is joined. `off` puts back exactly what was there.
+    """
+    path = settings_path()
+    try:
+        settings = json.loads(path.read_text()) if path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return f"STATUS LINE: couldn't read {path} as JSON; nothing changed."
+    if not isinstance(settings, dict):
+        return f"STATUS LINE: {path} isn't a JSON object; nothing changed."
+    current = settings.get("statusLine")
+    current_cmd = current.get("command", "") if isinstance(current, dict) else ""
+    ours = STATUS_MARK in current_cmd
+    stored = read_config_file()
+
+    if not on:
+        if not ours:
+            return "STATUS LINE: quest-log isn't in your status line; nothing changed."
+        previous = stored.get("replaced_statusline")
+        if previous:
+            settings["statusLine"] = previous
+        else:
+            settings.pop("statusLine", None)
+        write_json(path, settings)
+        write_config_value("replaced_statusline", None)
+        what = "your previous status line is back" if previous else "removed"
+        return f"STATUS LINE: quest-log {what} in {path}. Takes effect on the next refresh."
+
+    command = statusline_command()
+    if ours:
+        return f"STATUS LINE: already on in {path}."
+    if current_cmd:
+        write_config_value("replaced_statusline", current)
+        other = current_cmd.rstrip().rstrip(";")
+        command = (
+            "input=$(cat); "
+            f"a=$(printf '%s' \"$input\" | {{ {other}\n}}); "
+            f"b=$(printf '%s' \"$input\" | {command.split('  #')[0]}); "
+            "printf '%s' \"$a\"; [ -n \"$a\" ] && [ -n \"$b\" ] && printf ' · '; printf '%s' \"$b\""
+            f"  # {STATUS_MARK}"
+        )
+        note = " after your existing one"
+    elif current is not None:
+        write_config_value("replaced_statusline", current)
+        note = ""
+    else:
+        note = ""
+    entry = dict(current) if isinstance(current, dict) else {}
+    entry.update(type="command", command=command)
+    settings["statusLine"] = entry
+    if path.exists():
+        backup = path.with_name(path.name + ".quest-log.bak")
+        backup.write_text(path.read_text())
+    write_json(path, settings)
+    return (f"STATUS LINE: on{note}, in {path}. It survives plugin updates; "
+            "`/quests statusline off` takes it out again.")
+
+
 # --------------------------------------------------------- commands (user-facing)
 
 def cmd_help() -> str:
@@ -1308,6 +1397,10 @@ WATCH
                         command, for a split you open yourself.
 
   /quests done          Every completed quest, not just the latest three.
+
+  /quests statusline    Put the tracked quest in your status line: edits your
+                        settings.json, keeps any status line you have, and
+                        survives updates. `/quests statusline off` undoes it.
 
 SHARE
   /quests chronicle     The session told as markdown: what you asked, what was
@@ -1372,6 +1465,7 @@ USER_COMMANDS = re.compile(
       | (?P<adopt>adopt) (?: \s+ (?P<adopt_what>\d+|all) )?
       | (?P<chronicle>chronicle|story)
       | (?P<live>live|watch)
+      | status\ ?line (?: \s+ (?P<sl_mode>on|off) )? (?P<sl>)
       | (?P<done>done|completed|finished)
       | (?P<config>config) (?: \s+ (?P<cfg_key>\w+) (?: \s+ (?P<cfg_val>\S+) )? )?
       | (?P<help>help)
@@ -1411,6 +1505,8 @@ def dispatch(raw: str) -> str:
             return render_chronicle(state)
         elif g["done"]:
             result = render_log(state, all_done=True)
+        elif g["sl"] is not None:
+            return cmd_statusline_install((g["sl_mode"] or "on").lower() == "on")
         elif g["live"]:
             return launch_live(sid, root)
         elif g["config"]:
