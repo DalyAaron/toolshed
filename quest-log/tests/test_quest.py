@@ -366,6 +366,22 @@ class TodoHandoff(QuestTest):
         self.assertIn("already /todo #1", self.q("to-todo", "r1"))
         self.assertEqual(self.state()["quests"][0]["objectives"][1]["state"], "parked")
 
+    def test_from_todo_traces_the_chain(self):
+        self.start()
+        self.q("rumor", "add a gitignore")
+        self.q("to-todo", "r1")
+        self.q("to-todo", "1.2")
+        self.prompt("/todo next")
+        self.q("accept", "--title", "Ignore pycache", "--ask", "2", "--from-todo", "1")
+        self.q("accept", "--title", "Second step", "--from-todo", "#2")
+        self.q("accept", "--title", "Elsewhere", "--from-todo", "7")
+        journals = [q["journal"][0]["text"] for q in self.state()["quests"][1:]]
+        self.assertEqual(journals, [
+            "Began as rumor r1 (turn 1), then /todo #1.",
+            "Began as objective 1.2 of #1, then /todo #2.",
+            "Began as /todo #7."])
+        self.assertEqual(self.state()["quests"][1]["from_todo"], 1)
+
     def test_foreign_store_is_refused(self):
         self.start()
         slug = re.sub(r"[^A-Za-z0-9]+", "-", self.root)

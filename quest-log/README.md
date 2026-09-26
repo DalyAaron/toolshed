@@ -71,8 +71,22 @@ on:
 ```
 
 The rumor leaves the log, so it isn't listed twice. It's yours now, for
-`/todo next` whenever you want it. Quests and single objectives move the same
-way (`/quests todo 2`, `/quests todo 2.3`).
+whenever you want it. Quests and single objectives move the same way
+(`/quests todo 2`, `/quests todo 2.3`).
+
+When you pick it up with `/todo next`, it comes back as a quest. Claude does
+the work, the todo is marked done, and the log shows how it ended:
+
+```
+FINISHED
+  ✔ #1 Stack module with tests (+2 later asks) — pop returns None on empty; 6/6 tests pass; committed; docstrings chec…
+  ✔ #2 Add size to Stack (+1 later ask) — size() added returning len(self); 7/7 tests pass; uncommitted
+  ✔ #3 Ignore __pycache__ — .gitignore added with __pycache__/; no longer untracked; uncommitted
+```
+
+`/quests 3` traces it the whole way back: *Began as rumor r1 (turn 4), then
+/todo #1.* Noticed, parked, picked up and done, and neither list ends up with
+a stale copy.
 
 ## Install
 

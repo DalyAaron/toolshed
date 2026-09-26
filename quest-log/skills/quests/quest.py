@@ -562,6 +562,21 @@ def render_for_claude(state: dict) -> str:
 
 # ------------------------------------------------------ commands (Claude-facing)
 
+def todo_origin(state: dict, tid: int) -> str:
+    """Journal line for a quest started from /todo #tid, tracing it back to
+    the rumor, objective or quest this log handed off, when it was one."""
+    for rumor in state["rumors"]:
+        if rumor.get("todo") == tid:
+            return f"Began as rumor r{rumor['id']} (turn {rumor['turn']}), then /todo #{tid}."
+    for other in state["quests"]:
+        if other.get("todo") == tid:
+            return f"Began as quest #{other['id']} ({other['title']}), then /todo #{tid}."
+        for n, obj in enumerate(other["objectives"], 1):
+            if obj.get("todo") == tid:
+                return f"Began as objective {other['id']}.{n} of #{other['id']}, then /todo #{tid}."
+    return f"Began as /todo #{tid}."
+
+
 def cmd_accept(state: dict, flags: "dict[str, list[str]]") -> str:
     title = first(flags, "title")
     if not title:
@@ -608,6 +623,11 @@ def cmd_accept(state: dict, flags: "dict[str, list[str]]") -> str:
             if rumor["id"] == int(rumor_ref):
                 rumor["quest"] = quest["id"]
                 quest["journal"].append({"turn": state["turn"], "text": f"Began as rumor r{rumor['id']}."})
+
+    todo_ref = first(flags, "from-todo").lstrip("#")
+    if todo_ref.isdigit():
+        quest["from_todo"] = int(todo_ref)
+        quest["journal"].append({"turn": state["turn"], "text": todo_origin(state, int(todo_ref))})
 
     state["quests"].append(quest)
     state["next_id"] += 1
@@ -1162,7 +1182,7 @@ CLI: `quest <verb> ...` (the plugin puts `quest` on your Bash PATH; if it's not 
 - A later ask that extends or redirects a quest: `link <quest> <ask> "what changed"`. Don't rewrite the quest; the journal keeps the history.
 - While working: `check <quest>.<n>` when an objective lands, `objective <quest> "..."` when you find a new step, `journal <quest> "chose X over Y because Z"` for decisions and their consequences.
 - Blocked on the user: `await <quest> "the question"`. Finished and verified: `turn-in <quest> --outcome "..." --loot <path|sha|url>`. Dropped: `abandon <quest> --reason "..."`. `track <quest>` switches focus.
-- `rumor "..."` is for something worth doing that you thought of and did NOT act on. If you acted on it, it's a quest or objective instead (`accept ... --from-rumor r1`). A question only the user can answer ("should X return 1 or raise?") is never a rumor: ask it, and `await` the quest if you can't go on without the answer.
+- `rumor "..."` is for something worth doing that you thought of and did NOT act on. If you acted on it, it's a quest or objective instead (`accept ... --from-rumor r1`). Starting a /todo item is a quest too: `accept ... --from-todo <n>`. A question only the user can answer ("should X return 1 or raise?") is never a rumor: ask it, and `await` the quest if you can't go on without the answer.
 - {handoff}"""
 
 
@@ -1400,7 +1420,7 @@ HOOKS = {
 }
 
 FLAGS = {"title", "kind", "ask", "why", "reward", "objective", "outcome", "loot",
-         "reason", "from-rumor", "quest"}
+         "reason", "from-rumor", "from-todo", "quest"}
 
 
 def main() -> int:

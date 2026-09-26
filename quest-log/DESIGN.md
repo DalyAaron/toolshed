@@ -205,6 +205,14 @@ changed its schema. In `tests/`, a test loads `todo.py` itself, creates a todo
 the native way, and fails if todo.py's items have fields quest-log doesn't
 write, or if todo.py can't list what quest-log wrote.
 
+The way back is `accept --from-todo <n>`, which the protocol asks for when
+Claude starts a /todo item. It records `from_todo` and journals where the item
+came from. If this log handed it off in the first place (a rumor, objective or
+quest whose `todo` is that id), the journal traces the whole chain, e.g.
+"Began as rumor r1 (turn 4), then /todo #1." Found in a trial where
+`/todo next` turned a handed-off rumor into quest #3, and only its "why" text
+said where it came from.
+
 A handed-off quest becomes `parked` and a handed-off objective stops counting
 toward progress. The log shows where each one went (`→ /todo #4`), so nothing
 seems to have been silently dropped.
@@ -231,7 +239,7 @@ what was produced. They overlap only at objectives.
 
 ```
 quest.py accept --title T [--kind main|side] --ask N [--why W] [--reward R]
-                [--objective O]... [--from-rumor rN]
+                [--objective O]... [--from-rumor rN] [--from-todo N]
 quest.py objective <q> "<text>"
 quest.py check <q>.<n> [...]          # also: fail <q>.<n>
 quest.py journal <q> "<decision>"
