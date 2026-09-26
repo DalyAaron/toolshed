@@ -231,16 +231,57 @@ class Nudge(QuestTest):
         again = self.hook("stop", {"stop_hook_active": True}, CLAUDE_QUESTS_REMINDERS="strict")
         self.assertNotIn("decision", again)
 
-    def test_stop_flushes_toasts(self):
+    def test_stop_flushes_full_toasts(self):
         self.start()
         self.q("check", "1.1")
-        out = self.hook("stop")
+        out = self.hook("stop", CLAUDE_QUESTS_TOASTS="full")
         self.assertEqual(out["systemMessage"].splitlines(), [
             "📜 Quest accepted: #1 Build the thing",
             "✔ Objective complete: first step (#1 1/2)"])
         self.assertEqual(self.hook("stop"), {})
         self.q("check", "1.2")
         self.assertEqual(self.hook("stop", CLAUDE_QUESTS_TOASTS="off"), {})
+
+    def test_summary_toast_replays_the_trial_turn(self):
+        """The busy turn from the interactive trial, as one line."""
+        self.start()
+        self.q("check", "1.1", "1.2")
+        self.q("turn-in", "1")
+        self.hook("stop")
+        self.prompt("actually, change it")
+        self.prompt("add a size method")
+        self.q("link", "1", "2")
+        self.q("objective", "1", "change it")
+        self.q("objective", "1", "commit")
+        self.q("check", "1.3", "1.4")
+        self.q("link", "1", "3")
+        self.q("turn-in", "1")
+        self.q("accept", "--title", "Add size to Stack, with tests", "--ask", "3")
+        self.q("await", "2", "method or __len__?")
+        self.q("rumor", "pycache untracked")
+        expected = ('📜 #1 updated · ➕2 · ✔2 · 🏆 #1 complete · '
+                    '✨ #2 created "Add size to Stack, with tests" · ⏸ #2 awaiting you · 👂 1 rumor')
+        for style in ("rpg", "plain"):  # always emoji
+            state_toasts = self.state()["toasts"]
+            out = self.hook("stop", CLAUDE_QUESTS_STYLE=style)
+            self.assertEqual(out["systemMessage"], expected)
+            path = self.tmp / "quests" / re.sub(r"[^A-Za-z0-9]+", "-", self.root) / (self.sid + ".json")
+            state = json.loads(path.read_text())
+            state["toasts"] = state_toasts
+            path.write_text(json.dumps(state))
+
+    def test_summary_names_quest_when_counts_switch(self):
+        self.start()
+        self.q("accept", "--title", "Other", "--objective", "a")
+        self.q("check", "1.1", "2.1")
+        self.q("to-todo", "1.2")
+        out = self.hook("stop")["systemMessage"]
+        self.assertEqual(out, '✨ #1 created "Build the thing" · ✨ #2 created "Other" · '
+                              '#1 ✔1 · #2 ✔1 · → 1 to /todo')
+
+    def test_old_toasts_value_still_works(self):
+        self.start()
+        self.assertIn("✨ #1 created", self.hook("stop", CLAUDE_QUESTS_TOASTS="on")["systemMessage"])
 
     def test_off_means_silent(self):
         self.assertEqual(self.hook("prompt", {"prompt": "x"}, CLAUDE_QUESTS_REMINDERS="off"), {})

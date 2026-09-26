@@ -30,8 +30,12 @@ FINISHED
   ✔ #2 Fix README typo (+1 later ask) — fixed 3 typos; also checked CHANGELOG
 ```
 
-As the log changes, one-line notices appear in your terminal
-(`✔ Objective complete: Implement hooks (#1 3/5)`). They cost Claude nothing.
+At the end of each turn, one line in your terminal sums up what changed in
+the log. It costs Claude nothing:
+
+```
+📜 #1 updated · ➕2 · ✔2 · 🏆 #1 complete · ✨ #2 created "Add size to Stack" · ⏸ #2 awaiting you · 👂 1 rumor
+```
 
 ## How it differs from /todo
 
@@ -176,7 +180,7 @@ the JSON on stdin passed to each (`input=$(cat)` first, then `echo "$input" |`).
 | :--- | :--- | :--- |
 | `style` | `rpg` | `plain` drops the emoji and quest vocabulary, which saves tokens when Claude relays the log. |
 | `reminders` | `nudge` | `nudge`: after Claude edits files or commits without logging it, it's told on your next prompt. `strict`: it can't end a turn until it logs them. `off`: no hooks, no log keeping. |
-| `toasts` | `on` | Terminal notices when the log changes. |
+| `toasts` | `summary` | Terminal notices when the log changes. `summary`: one line per turn, always with emoji. `full`: one line per change. `off`: none. |
 | `todo_handoff` | `ask` | `auto` also copies every rumor to `/todo` as it's noted. |
 
 Set with `/quests config <key> <value>`, or for one session with

@@ -122,9 +122,23 @@ count too; not worth a shell parser.
 
 ## Toasts: the log talks to the user for free
 
-Each CLI write queues a one-line toast ("✔ Objective complete: …"). The `Stop`
-hook flushes the queue as `systemMessage`, which the terminal prints verbatim
-and the model never sees. See `/todo`'s DESIGN.md, "Two hook output channels".
+Each CLI write queues a toast: its styled line, plus what happened to which
+quest. The `Stop` hook flushes the queue as `systemMessage`, which the terminal
+prints verbatim and the model never sees. See `/todo`'s DESIGN.md, "Two hook
+output channels".
+
+By default (`toasts: summary`) the queue is folded into one line, in the order
+things happened:
+`📜 #1 updated · ➕2 · ✔2 · 🏆 #1 complete · ✨ #2 created "Add size…" · ⏸ #2 awaiting you · 👂 1 rumor`.
+Runs of the same kind on the same quest become a count, and a count names its
+quest only when the quest changes. A quest is `updated` at most once and never
+on the turn it was `created`. Rumors and handoffs are totalled at the end. The
+summary is always emoji, whatever `style` says: the icons are what make one
+line readable at a glance. `full` keeps the old one line per change, and `on`,
+0.1.0's value, reads as `summary`.
+
+Found in the interactive trial. One busy turn printed seven lines, and the
+user preferred the summary.
 
 Verified for `Stop` too: a headless `claude -p --output-format stream-json`
 run emits each line as an `informational` event prefixed `Stop says:`, which is
@@ -265,11 +279,13 @@ git repo and a scratch `CLAUDE_QUESTS_DIR`. Passes on Python 3.6.15 (a
 conda-forge osx-64 build under Rosetta) as well as current Python.
 ```
 
-## To verify before 1.0
+## Checked in a real terminal
 
-- **The interactive terminal.** Everything so far ran headless. Still to see in a
-  real terminal: how several `Stop says:` toasts look together, how `/quests`
-  and `/quests chronicle` render, and whether the per-prompt brief is visible.
+An interactive trial (stack module, a redirect, a question for the user, a
+rumor handed to /todo and picked back up) confirmed: `/quests` and
+`/quests chronicle` render as intended, and the per-prompt brief never shows
+in the terminal. It also led to the summary toast, to finished quests showing
+their outcome and later asks, and to `--from-todo`.
 
 Verified end to end with `claude -p --plugin-dir quest-log` on a scratch repo:
 the protocol arrives at `SessionStart` and `resume`, asks are recorded verbatim,

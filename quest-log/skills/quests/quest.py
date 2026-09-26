@@ -31,9 +31,10 @@ SETTINGS: "dict[str, tuple[object, tuple, str]]" = {
         "a turn until it logs them; 'off' leaves it to Claude.",
     ),
     "toasts": (
-        "on", ("on", "off"),
-        "One-line notices in your terminal when the log changes during a turn, "
-        "like 'Objective complete'. They cost Claude no tokens.",
+        "summary", ("summary", "full", "off"),
+        "Notices in your terminal when the log changes during a turn. They cost "
+        "Claude no tokens. 'summary' is one line per turn, always with emoji "
+        "(📜 #1 updated · ✔2 · 🏆 #1 complete); 'full' is one line per change.",
     ),
     "todo_handoff": (
         "ask", ("ask", "auto"),
@@ -78,9 +79,10 @@ GLYPHS = {
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
     "0.2.0": (
-        "/quests 0.2.0 — new: `/quests chronicle` (the session as markdown, for a PR\n"
-        "or handoff), `/quests adopt` (unfinished quests from earlier sessions), and a\n"
-        "status line (`quest.py statusline`, see the README). Details: /quests help"
+        "/quests 0.2.0 — log changes now print as one summary line per turn. New:\n"
+        "`/quests chronicle` (the session as markdown, for a PR or handoff), `/quests\n"
+        "adopt` (unfinished quests from earlier sessions), and a status line (see the\n"
+        "README). Allow `Bash(quest *)` to stop log writes asking. Details: /quests help"
     ),
 }
 
@@ -149,8 +151,12 @@ def write_config_value(key: str, value: object) -> None:
     write_json(config_path(), stored)
 
 
+ALIASES = {("toasts", "on"): "summary"}  # 0.1.0's value
+
+
 def coerce(key: str, raw: object) -> str:
     value = str(raw).strip().lower()
+    value = ALIASES.get((key, value), value)
     accepted = SETTINGS[key][1]
     if value not in accepted:
         raise ValueError(f"{key} must be one of: {', '.join(accepted)}")
@@ -290,13 +296,22 @@ def reopen(state: dict, quest: dict, why: str) -> None:
     state["tracked"] = quest["id"]
 
 
-def logged(state: dict, toast: "str | None" = None) -> None:
-    """Every write through the CLI counts as Claude keeping the log current."""
+def logged(state: dict, toast: "str | None" = None, kind: "str | None" = None,
+           quest: "dict | None" = None) -> None:
+    """Every write through the CLI counts as Claude keeping the log current.
+
+    A toast keeps its styled line (for `toasts: full`) and what happened to
+    which quest (for the one-line summary the Stop hook prints by default).
+    """
     state["unlogged_files"] = []
     state["unlogged_commits"] = 0
     state["last_log_turn"] = state.get("turn", 0)
     if toast:
-        state.setdefault("toasts", []).append(toast)
+        state.setdefault("toasts", []).append({
+            "text": toast, "kind": kind,
+            "quest": quest["id"] if quest else None,
+            "title": quest["title"] if quest else None,
+        })
 
 
 def git_context() -> dict:
@@ -632,7 +647,7 @@ def cmd_accept(state: dict, flags: "dict[str, list[str]]") -> str:
     state["quests"].append(quest)
     state["next_id"] += 1
     state["tracked"] = quest["id"]
-    logged(state, f"{glyphs()['t_accept']}: #{quest['id']} {title}")
+    logged(state, f"{glyphs()['t_accept']}: #{quest['id']} {title}", "accept", quest)
     n = len(quest["objectives"])
     return f"QUEST #{quest['id']} accepted ({kind}, tracked" + (f", objectives {quest['id']}.1-{quest['id']}.{n})" if n else ")")
 
@@ -666,7 +681,8 @@ def cmd_mark(state: dict, refs: "list[str]", new_state: str) -> str:
             quest["awaiting"] = None
         done, total = progress(quest)
         toast = g["t_check"] if new_state == "done" else g["t_fail"]
-        logged(state, f"{toast}: {obj['text']} (#{quest['id']} {done}/{total})")
+        logged(state, f"{toast}: {obj['text']} (#{quest['id']} {done}/{total})",
+               "check" if new_state == "done" else "fail", quest)
         line = f"{quest['id']}.{n} {new_state} — #{quest['id']} {done}/{total}"
         if new_state == "done" and done == total:
             line += " — every objective done; turn it in once the reward is verified"
@@ -684,7 +700,7 @@ def cmd_objective(state: dict, pos: "list[str]") -> str:
     reopen(state, quest, f"new objective: {text}")
     quest["objectives"].append({"text": text, "state": "open", "turn": state["turn"]})
     n = len(quest["objectives"])
-    logged(state, f"{glyphs()['t_objective']}: {text} (#{quest['id']})")
+    logged(state, f"{glyphs()['t_objective']}: {text} (#{quest['id']})", "objective", quest)
     return f"Objective {quest['id']}.{n} added."
 
 
@@ -720,7 +736,7 @@ def cmd_link(state: dict, pos: "list[str]") -> str:
         quest["journal"].append({"turn": state["turn"], "text": f"New orders (ask #{ask['id']}): {note}"})
     if quest["status"] == "awaiting":
         quest["status"], quest["awaiting"] = "active", None
-    logged(state, f"{glyphs()['t_link']}: #{quest['id']} {quest['title']}")
+    logged(state, f"{glyphs()['t_link']}: #{quest['id']} {quest['title']}", "link", quest)
     return f"Linked ask #{ask['id']} to #{quest['id']}" + ("." if was_open else " and reopened it.")
 
 
@@ -732,7 +748,7 @@ def cmd_await(state: dict, pos: "list[str]") -> str:
         return f"No open quest #{pos[0]}."
     quest["status"] = "awaiting"
     quest["awaiting"] = one_line(" ".join(pos[1:]))
-    logged(state, f"{glyphs()['t_await']}: #{quest['id']} — {quest['awaiting']}")
+    logged(state, f"{glyphs()['t_await']}: #{quest['id']} — {quest['awaiting']}", "await", quest)
     return f"#{quest['id']} is awaiting the user."
 
 
@@ -767,7 +783,7 @@ def cmd_close(state: dict, pos: "list[str]", flags: "dict[str, list[str]]", stat
         toast = f"{g['t_abandon']}: #{quest['id']} {quest['title']}"
     if state.get("tracked") == quest["id"]:
         retrack(state)
-    logged(state, toast)
+    logged(state, toast, "turn_in" if status == "done" else "abandon", quest)
     left = sum(o["state"] == "open" for o in quest["objectives"])
     note = f" ({left} objective(s) were still open)" if left else ""
     verb = "turned in" if status == "done" else "abandoned"
@@ -784,7 +800,7 @@ def cmd_rumor(state: dict, pos: "list[str]", flags: "dict[str, list[str]]") -> s
         rumor["near"] = find_quest(state, near)["id"]
     state["rumors"].append(rumor)
     state["next_rumor"] += 1
-    logged(state, f"{glyphs()['t_rumor']}: {text}")
+    logged(state, f"{glyphs()['t_rumor']}: {text}", "rumor")
     result = f"Rumor r{rumor['id']} noted."
     if cfg()["todo_handoff"] == "auto":
         result += "\n" + cmd_to_todo(state, f"r{rumor['id']}")
@@ -878,7 +894,7 @@ def cmd_to_todo(state: dict, ref: str) -> str:
         entry["done_at"] = now()
         if state.get("tracked") == entry["id"]:
             retrack(state)
-    logged(state, f"{glyphs()['t_todo']}: {text} (#{todo['id']})")
+    logged(state, f"{glyphs()['t_todo']}: {text} (#{todo['id']})", "todo")
     hint = " (no /todo store existed yet — install claude-todo to see it)" if fresh_store else ""
     return f"Sent {what} to /todo #{todo['id']}{hint}."
 
@@ -1009,7 +1025,8 @@ def cmd_adopt(state: dict, target: "str | None") -> str:
     moved = [m for m in (adopt_one(state, p, q) for p, _, q in chosen) if m]
     if not moved:
         return "Those quests are no longer open in their sessions — run `/quests adopt` again."
-    logged(state, f"{glyphs()['t_adopt']}: " + ", ".join(f"#{m['id']} {m['title']}" for m in moved))
+    for m in moved:
+        logged(state, f"{glyphs()['t_adopt']}: #{m['id']} {m['title']}", "adopt", m)
     return "Adopted " + ", ".join(f"#{m['id']} {m['title']}" for m in moved) + "."
 
 
@@ -1047,7 +1064,8 @@ SETTINGS
   /quests config        Every setting, its value, and what it controls.
   /quests config <k> <v>
                         Change one. style: rpg | plain  reminders: nudge |
-                        strict | off  toasts: on | off  todo_handoff: ask | auto
+                        strict | off  toasts: summary | full | off
+                        todo_handoff: ask | auto
 
 WHAT CLAUDE LOGS
   quest      A request that needs edits or more than one step. Chat and quick
@@ -1346,6 +1364,60 @@ def hook_post_tool(payload: dict) -> None:
         write_json(path, state)
 
 
+# The summary is always emoji, whatever `style` says: it's one line, and the
+# icons are what make it scannable at a glance.
+SUMMARY_COUNTS = {"objective": "➕", "check": "✔", "fail": "✗"}
+
+
+def summarize_toasts(toasts: list) -> str:
+    """One line for a turn's log changes, in the order they happened:
+    `📜 #1 updated · ➕2 · ✔2 · 🏆 #1 complete · ✨ #2 created "Add size" · 👂 1 rumor`
+    """
+    parts: "list[list]" = []  # [kind, quest, text or count]
+    created, updated, prev_q = set(), set(), None
+    rumors = sent = 0
+    for t in toasts:
+        if isinstance(t, str):  # queued by an older version mid-session
+            parts.append(["text", None, t])
+            continue
+        kind, qid = t.get("kind"), t.get("quest")
+        if kind == "rumor":
+            rumors += 1
+        elif kind == "todo":
+            sent += 1
+        elif kind in SUMMARY_COUNTS:
+            if parts and parts[-1][0] == kind and parts[-1][1] == qid:
+                parts[-1][2] += 1
+            else:
+                parts.append([kind, qid, 1])
+        elif kind == "link":
+            if qid not in created and qid not in updated:
+                updated.add(qid)
+                parts.append([kind, qid, f"📜 #{qid} updated"])
+        elif kind == "accept":
+            created.add(qid)
+            parts.append([kind, qid, f'✨ #{qid} created "{clip(t.get("title") or "", 30)}"'])
+        elif kind in ("await", "turn_in", "abandon", "adopt"):
+            label = {"await": "⏸ #{} awaiting you", "turn_in": "🏆 #{} complete",
+                     "abandon": "🚫 #{} abandoned", "adopt": "📜 #{} resumed"}[kind]
+            parts.append([kind, qid, label.format(qid)])
+        else:
+            parts.append(["text", None, t.get("text", "")])
+    out = []
+    for kind, qid, value in parts:
+        if kind in SUMMARY_COUNTS:
+            lead = f"#{qid} " if qid != prev_q else ""
+            out.append(f"{lead}{SUMMARY_COUNTS[kind]}{value}")
+        else:
+            out.append(value)
+        prev_q = qid if qid is not None else prev_q
+    if rumors:
+        out.append(f"👂 {rumors} rumor{'s' * (rumors > 1)}")
+    if sent:
+        out.append(f"→ {sent} to /todo")
+    return " · ".join(out)
+
+
 def hook_stop(payload: dict) -> None:
     """Stop: flush this turn's toasts; in strict mode, refuse to stop on unlogged edits."""
     root = project_root()
@@ -1373,7 +1445,11 @@ def hook_stop(payload: dict) -> None:
             ),
         }
     write_json(path, state)
-    system = "\n".join(toasts) if toasts and conf["toasts"] == "on" else None
+    system = None
+    if toasts and conf["toasts"] == "summary":
+        system = summarize_toasts(toasts)
+    elif toasts and conf["toasts"] == "full":
+        system = "\n".join(t if isinstance(t, str) else t["text"] for t in toasts)
     emit(None, system=system, extra=extra)
 
 
