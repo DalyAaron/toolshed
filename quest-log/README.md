@@ -227,12 +227,12 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-1.0.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
+1.1.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
 open.
 
 ## Changelog
 
-### Unreleased
+### 1.1.0
 
 - **`/quests live`**: the log in a pane beside Claude, redrawn as it works.
 - **A proper quest log.** A frame, progress bars, and sections: awaiting you,

@@ -80,6 +80,11 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.1.0": (
+        "/quests 1.1.0 — the log is laid out like a game's quest log now. New:\n"
+        "`/quests live` (the log beside Claude as it works), `/quests statusline`\n"
+        "(the tracked quest under your prompt, set up for you) and `/quests done`."
+    ),
     "1.0.0": (
         "/quests 1.0.0 — log changes now print as one summary line per turn. New:\n"
         "`/quests chronicle` (the session as markdown, for a PR or handoff), `/quests\n"
