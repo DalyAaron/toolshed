@@ -39,7 +39,7 @@ the log. It costs Claude nothing:
 
 ## How it differs from /todo
 
-`/todo` is **your** parking lot: ideas you want to come back to. `/quests` is
+`/todo` is **your** todo list: ideas you want to come back to. `/quests` is
 **Claude's** record of what you asked for and how far it has got. They connect
 in one place. Anything on the log can be sent to `/todo`, but only when you ask
 or agree.
@@ -62,7 +62,7 @@ FINISHED
 ```
 
 Tell Claude "move rumors to todo" (or run `/quests todo r1`) and it goes to
-your parking lot. It carries where it came from and the commit it was noticed
+your /todo list. It carries where it came from and the commit it was noticed
 on:
 
 ```
@@ -174,7 +174,7 @@ nothing when there's no quest, so it combines with an existing status line:
 run both and join the output, e.g. `echo "$(your-line) $(quest-line)"` with
 the JSON on stdin passed to each (`input=$(cat)` first, then `echo "$input" |`).
 
-## Settings
+## Config Settings
 
 | Key | Default | Effect |
 | :--- | :--- | :--- |
@@ -199,3 +199,38 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 0.2.0, early. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
 open.
+
+## Changelog
+
+### 0.2.0
+
+- **One summary line per turn.** Log changes now print as a single line, always
+  with emoji: `📜 #1 updated · ✔2 · 🏆 #1 complete · ✨ #2 created "…"`.
+  `toasts: full` brings back one line per change, and `on` means `summary`.
+- **No more permission prompt on every log write.** Claude now calls a `quest`
+  command the plugin puts on its PATH, so one allow rule, `Bash(quest *)`,
+  covers every write and survives updates. Auto mode still works too.
+- **`/quests chronicle`**: the session as markdown, for a PR description or a
+  handoff.
+- **`/quests adopt`**: continue unfinished quests from earlier sessions of the
+  repo, worktrees included. A new session also mentions them at the start.
+- **Status line**: `⚔ Ship quest-log · 3/5 · ▸ Implement hooks`. See
+  [Status line](#status-line) for the setup.
+- **Finished quests show their outcome** and how many later asks were folded
+  in, so nothing you asked disappears into a closed quest.
+- **`/todo` round trip**: a quest started from a todo traces where it came from,
+  e.g. *Began as rumor r1 (turn 4), then /todo #1.*
+- **Commits count.** A `git commit` Claude didn't log now triggers the reminder,
+  like an unlogged edit does.
+- **Fixed**: subagent reports and background-task notices were recorded as your
+  asks. A question for you is never filed as a rumor, and when the tracked quest
+  finishes, tracking falls back to one that's waiting on you.
+- **Release notes on update**, printed once in your terminal at the start of a
+  session, as `/todo` does.
+- **Tests**: `quest-log/tests/test_quest.py`, passing on Python 3.6 and later.
+
+### 0.1.0
+
+- First release: Claude keeps a quest log of the session (asks, quests,
+  objectives, journal, what's awaiting you, rumors), with `/quests` to read and
+  steer it, terminal notices as it changes, and handoff to `/todo`.
