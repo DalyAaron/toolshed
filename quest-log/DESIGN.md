@@ -34,6 +34,13 @@ reading of the request would be written by Claude. The hook numbers every
 prompt and tells Claude its number (`ask #N`), so linking costs a flag, not a
 paraphrase.
 
+**Only the user's words are asks.** Claude Code also starts turns itself: a
+subagent handing back its report, a background task finishing. Those arrive
+through `UserPromptSubmit` like a prompt, and the first 0.2.0 working session
+logged a subagent's report as ask #2 and its task notification as #3. The hook
+now skips prompts that open with `<task-notification>`, `<agent-message` or
+`[SYSTEM NOTIFICATION`, and they don't advance the turn either.
+
 **New orders reopen a finished quest.** `link` or `objective` on a quest that's
 already turned in (or abandoned, or parked) puts it back to active, tracks it,
 and journals "Reopened". Found in the first end-to-end run: the user followed a
@@ -51,6 +58,18 @@ does the thing it noticed. At that point it's work, and it belongs in the log
 as an objective or a side quest (`accept --from-rumor r1` if it started as a
 rumor). A rumor list full of things already done would be a false record of
 what's outstanding.
+
+A question only the user can answer is never a rumor either. In the first e2e
+run Claude logged "decide whether multiply() with no args should return 1 or
+raise" as one, which files the question where the user won't look. The
+protocol now says so: ask it, and `await` if the quest can't go on without it.
+
+**Tracking falls back to an awaiting quest.** When the tracked quest closes,
+`retrack` picks the newest open main, else side, among *active* quests first,
+then awaiting ones. An awaiting quest is still where the work resumes once the
+user answers, and leaving tracking empty dropped it from the per-prompt brief
+and the status line. Its status is left alone; only the user's answer (or a
+`check`, `link` or `track`) lifts the wait.
 
 ## Flavor lives in the renderer only
 
@@ -94,9 +113,12 @@ edit nothing, so they never trigger it. That's why chat doesn't need an explicit
 `ack`. `stop_hook_active` guards it, so it blocks at most once per turn and can't
 loop.
 
-Edits are the signal because they are the one kind of work that's cheap to see
-from a hook. Bash-driven work (commits, test runs) doesn't trigger the nudge.
-That's deliberate for now: most of it is verification rather than progress.
+Edits are the main signal because they are the one kind of work that's cheap
+to see from a hook. Of Bash-driven work, only `git commit` counts: a commit is
+a milestone, while test runs and the like are mostly verification. The hook
+matches `Bash` but returns before touching the store unless the command
+contains a `git … commit` (and isn't a `quest` call). `echo git commit` would
+count too; not worth a shell parser.
 
 ## Toasts: the log talks to the user for free
 
@@ -107,6 +129,62 @@ and the model never sees. See `/todo`'s DESIGN.md, "Two hook output channels".
 Verified for `Stop` too: a headless `claude -p --output-format stream-json`
 run emits each line as an `informational` event prefixed `Stop says:`, which is
 what the terminal prints.
+
+## The `quest` command, and permissions
+
+Claude calls the CLI throughout the session, outside any skill, so the skill's
+`allowed-tools` doesn't cover it (that grant ends with the turn the skill ran
+in), and in the default permission mode every log write prompted. Plugins can't
+contribute permission rules, and the script's path changes with every update,
+so no path-based rule survives.
+
+What does survive: a plugin's `bin/` is on the Bash tool's `PATH` while the
+plugin is enabled (verified headless: `command -v quest` resolves to
+`quest-log/bin/quest`). So `bin/quest` is a two-line wrapper around
+`quest.py`, the protocol tells Claude to call `quest <verb>`, and the README
+offers one stable rule, `Bash(quest *)`, as the alternative to auto mode. The
+protocol still names the full path as a fallback, for hosts that don't install
+a plugin's `bin/`.
+
+Hooks keep calling `quest.py` through `${CLAUDE_PLUGIN_ROOT}`; they don't need
+the PATH and don't go through permissions.
+
+## Release notes
+
+Copied from `/todo`: `UPGRADE_NOTES` maps a version to a few lines, printed once
+as a `SessionStart` `systemMessage` the first session after an update, and
+`last_seen_version` in `config.json` records what was seen. A fresh install
+gets nothing. 0.1.0 didn't record a version, so an upgrade from it is told apart
+from a new install by an existing store. A note that's skipped (reminders
+`off`) is still recorded, so it can't come back later.
+
+## Continue your journey
+
+At `SessionStart` on `startup` or `clear`, Claude is told about open quests from
+other sessions of this checkout in the last 7 days, as a passive line to
+mention if relevant. `/quests adopt` looks wider, at the repo's worktrees too
+(same rule as `/todo`), numbers them, and `adopt <n|all>` moves one here:
+closed in its source as `adopted`, reopened here with a new id and tracked. Ask
+ids are per session, so the source's asks come along as `inherited_asks`, with
+their words and turn, and the journal says where the quest came from.
+
+## Status line
+
+`quest.py statusline` prints the tracked quest, its progress and next
+objective, and how many quests await the user, or nothing. It reads the session
+and directory from the status-line JSON, since that command runs outside the
+session's environment. Plugins can only ship `agent` and `subagentStatusLine`
+in their `settings.json`, so the user has to wire it in; the README gives a
+command that picks the newest cached version, so it survives updates.
+
+## Chronicle
+
+`/quests chronicle` renders the session as markdown: each quest with the user's
+asks quoted, why, what done means, the objectives as a checklist, the journal
+as decisions, outcome and loot, then any rumors. It's always plain: it leaves
+the terminal, for a PR description or a handoff, and the rpg vocabulary would
+only get in the way of whoever reads it next. SKILL.md has Claude relay it as
+rendered markdown rather than in a code block.
 
 ## /todo handoff
 
@@ -120,6 +198,12 @@ because plugins can't call one another. That couples quest-log to the
 claude-todo store format. Both live in this repo, so a schema change there
 must update `cmd_to_todo` in the same commit. Handed-off todos carry
 `"source": "quest-log"`, which todo.py ignores.
+
+Two checks keep that honest. At runtime, `cmd_to_todo` refuses to write into a
+store that lacks the keys it relies on, and says claude-todo has probably
+changed its schema. In `tests/`, a test loads `todo.py` itself, creates a todo
+the native way, and fails if todo.py's items have fields quest-log doesn't
+write, or if todo.py can't list what quest-log wrote.
 
 A handed-off quest becomes `parked` and a handed-off objective stops counting
 toward progress. The log shows where each one went (`→ /todo #4`), so nothing
@@ -160,18 +244,24 @@ quest.py rumor "<text>" [--quest q]
 quest.py to-todo <q | q.n | rN>
 quest.py ack                          # "nothing to log"; clears the nudge
 quest.py show [q]                     # plain log for Claude, or one entry
-quest.py dispatch --stdin             # /quests
+quest.py dispatch --stdin             # /quests, incl. adopt and chronicle
+quest.py statusline                   # status-line JSON on stdin
 quest.py hook-{session-start,prompt,post-tool,stop}
+quest <verb> ...                      # bin/ wrapper, on Claude's Bash PATH
+
+## Tests
+
+`python3 quest-log/tests/test_quest.py`: stdlib `unittest`, driving the script
+as Claude Code does (subprocesses, hook payloads on stdin) against a scratch
+git repo and a scratch `CLAUDE_QUESTS_DIR`. Passes on Python 3.6.15 (a
+conda-forge osx-64 build under Rosetta) as well as current Python.
 ```
 
 ## To verify before 1.0
 
-- **Permission prompts.** Claude calls `quest.py` throughout the session, outside
-  any skill, so `allowed-tools` doesn't cover it, and every log write prompts in
-  the default permission mode. For 0.1.0 the README recommends auto mode, which
-  runs them without asking. A real fix still needs an allow rule that survives
-  the install path moving on every plugin update, or a way for the plugin to
-  provide one.
+- **The interactive terminal.** Everything so far ran headless. Still to see in a
+  real terminal: how several `Stop says:` toasts look together, how `/quests`
+  and `/quests chronicle` render, and whether the per-prompt brief is visible.
 
 Verified end to end with `claude -p --plugin-dir quest-log` on a scratch repo:
 the protocol arrives at `SessionStart` and `resume`, asks are recorded verbatim,
@@ -181,14 +271,11 @@ as its literal text, so reading the log isn't recorded as an ask.
 
 ## Roadmap
 
-- **Mirror TodoWrite into objectives** via `PostToolUse`, so Claude's existing
-  checklist costs nothing extra. Blocked on confirming the tool's name and input
-  shape. The newer task tools may have replaced it.
-- **Status line tracker**: `quest.py statusline` →
-  `⚔ Ship quest-log · 3/5 · ▸ Implement hooks`.
-- **`/quests chronicle`**: the session as a narrative, for a PR description or a
-  handoff.
-- **Continue your journey**: surface unfinished quests from earlier sessions in
-  the project, and `adopt` them as `/todo` does.
+- **Mirror the checklist into objectives** via `PostToolUse`, so Claude's
+  existing checklist costs nothing extra. Still blocked on the tool's name and
+  input shape. Under Claude Code 2.1.283 no checklist tool was available to
+  probe: not headless (with or without `CLAUDE_CODE_ENABLE_TASKS=1`), not in an
+  interactive session. The docs point at `TaskCreate` / `TaskUpdate` replacing
+  `TodoWrite`, but don't give the input schema. Capture a real payload first.
 - **Codex**: facts learned about the codebase this session, kept apart from the
   log. Needs a clear line against memory first.

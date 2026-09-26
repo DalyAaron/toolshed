@@ -57,6 +57,7 @@ GLYPHS = {
         "t_link": "📜 Quest updated", "t_await": "⏸ Awaiting you",
         "t_turn_in": "🏆 Quest complete", "t_abandon": "✗ Quest abandoned",
         "t_rumor": "👂 Rumor noted", "t_todo": "→ Sent to /todo",
+        "t_adopt": "📜 Quest resumed", "adopted": "continued in another session",
     },
     "plain": {
         "head": "Session log", "main": "Main task", "side": "Other tasks",
@@ -69,7 +70,18 @@ GLYPHS = {
         "t_fail": "Failed", "t_link": "Updated", "t_await": "Waiting on you",
         "t_turn_in": "Finished", "t_abandon": "Abandoned", "t_rumor": "Noted",
         "t_todo": "Sent to /todo",
+        "t_adopt": "Resumed", "adopted": "continued in another session",
     },
+}
+
+# Shown once, in the terminal, the first session after an update. Keep each
+# entry to a few lines: it interrupts someone who did not ask for it.
+UPGRADE_NOTES = {
+    "0.2.0": (
+        "/quests 0.2.0 — new: `/quests chronicle` (the session as markdown, for a PR\n"
+        "or handoff), `/quests adopt` (unfinished quests from earlier sessions), and a\n"
+        "status line (`quest.py statusline`, see the README). Details: /quests help"
+    ),
 }
 
 ASK_CAP = 4000  # a pasted log shouldn't bloat the store; the quote shows 70 chars
@@ -129,6 +141,12 @@ def write_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     os.replace(tmp, path)  # atomic; a hook and a CLI call can't clobber
+
+
+def write_config_value(key: str, value: object) -> None:
+    stored = read_config_file()
+    stored[key] = value
+    write_json(config_path(), stored)
 
 
 def coerce(key: str, raw: object) -> str:
@@ -252,9 +270,13 @@ def current_objective(quest: dict) -> "tuple[int, dict] | None":
 
 
 def retrack(state: dict) -> None:
-    """After the tracked quest closes, follow the newest open main, else side."""
-    open_quests = [q for q in state["quests"] if q["status"] == "active"]
-    open_quests.sort(key=lambda q: (q["kind"] != "main", -q["id"]))
+    """After the tracked quest closes, follow the newest open main, else side.
+
+    Active quests win, but an awaiting one is still better than nothing: it's
+    where the work resumes once the user answers. Its status is left alone.
+    """
+    open_quests = [q for q in state["quests"] if is_open(q)]
+    open_quests.sort(key=lambda q: (q["status"] != "active", q["kind"] != "main", -q["id"]))
     state["tracked"] = open_quests[0]["id"] if open_quests else None
 
 
@@ -271,6 +293,7 @@ def reopen(state: dict, quest: dict, why: str) -> None:
 def logged(state: dict, toast: "str | None" = None) -> None:
     """Every write through the CLI counts as Claude keeping the log current."""
     state["unlogged_files"] = []
+    state["unlogged_commits"] = 0
     state["last_log_turn"] = state.get("turn", 0)
     if toast:
         state.setdefault("toasts", []).append(toast)
@@ -325,13 +348,15 @@ def parse_ids(raw: "list[str]") -> "list[int]":
 # ----------------------------------------------------------------- rendering
 
 def ask_quote(state: dict, quest: dict) -> "str | None":
-    if not quest["asks"]:
+    inherited = quest.get("inherited_asks") or []
+    if inherited:
+        ask, where = inherited[0], ", earlier session"
+    elif quest["asks"] and find_ask(state, quest["asks"][0]):
+        ask, where = find_ask(state, quest["asks"][0]), ""
+    else:
         return None
-    ask = find_ask(state, quest["asks"][0])
-    if not ask:
-        return None
-    line = f'"{clip(ask["text"])}" — you, turn {ask["turn"]}'
-    later = len(quest["asks"]) - 1
+    line = f'"{clip(ask["text"])}" — you, turn {ask["turn"]}{where}'
+    later = len(inherited) + len(quest["asks"]) - 1
     if later:
         line += f"  (+{later} later)"
     return line
@@ -407,6 +432,8 @@ def render_log(state: dict) -> str:
                 out.append(f"  {g['done']} #{quest['id']} {quest['title']} — {g['turned_in']}")
             elif quest["status"] == "parked":
                 out.append(f"  {g['parked']} #{quest['id']} {quest['title']} — /todo #{quest.get('todo')}")
+            elif quest["status"] == "adopted":
+                out.append(f"  {g['parked']} #{quest['id']} {quest['title']} — {g['adopted']}")
             else:
                 out.append(f"  {g['failed']} #{quest['id']} {quest['title']} — {g['abandoned']}")
 
@@ -421,10 +448,13 @@ def render_entry(state: dict, quest: dict) -> str:
     status = {
         "active": "in progress", "awaiting": "waiting on you", "done": g["turned_in"],
         "abandoned": g["abandoned"], "parked": f"sent to /todo #{quest.get('todo')}",
+        "adopted": f"{g['adopted']} ({str(quest.get('adopted_by'))[:8]})",
     }[quest["status"]]
     done, total = progress(quest)
     out = [f"QUEST #{quest['id']} — {quest['title']}",
            f"  {quest['kind']} · {status}" + (f" · {done}/{total} objectives" if total else "")]
+    for ask in quest.get("inherited_asks") or []:
+        out.append(f"  asked, turn {ask['turn']} of session {ask['session'][:8]}: \"{clip(ask['text'], 300)}\"")
     for aid in quest["asks"]:
         ask = find_ask(state, aid)
         if ask:
@@ -449,6 +479,63 @@ def render_entry(state: dict, quest: dict) -> str:
     if where:
         out.append(f"  accepted on {where} at {quest['created']}")
     return "\n".join(out)
+
+
+def render_chronicle(state: dict) -> str:
+    """The session as markdown, for a PR description or a handoff.
+
+    Always plain: it leaves the terminal, so the rpg vocabulary would only get
+    in the way of whoever reads it next.
+    """
+    project = Path(state.get("project") or project_root()).name
+    quests = [q for q in state["quests"] if q["status"] != "adopted"]
+    out = [f"# Chronicle — {project}", ""]
+    if not quests:
+        return "\n".join(out + ["Nothing logged yet this session."])
+    finished = sum(q["status"] == "done" for q in quests)
+    out += [f"{len(quests)} task(s) over {state.get('turn', 0)} turn(s); {finished} finished.", ""]
+    status = {"active": "in progress", "awaiting": "waiting on you", "done": "done",
+              "abandoned": "abandoned", "parked": "sent to /todo"}
+    marks = {"done": "x", "open": " ", "failed": " ", "parked": " "}
+    for quest in quests:
+        out.append(f"## {quest['title']} — {status.get(quest['status'], quest['status'])}")
+        out.append("")
+        asks = [a["text"] for a in quest.get("inherited_asks") or []]
+        asks += [a["text"] for a in (find_ask(state, i) for i in quest["asks"]) if a]
+        for n, text in enumerate(asks):
+            lead = "Asked" if n == 0 else "Then"
+            out.append(f"> **{lead}:** {clip(text, 400)}")
+            out.append(">")
+        if asks:
+            out.pop()
+            out.append("")
+        if quest.get("why"):
+            out.append(f"**Why:** {quest['why']}  ")
+        if quest.get("reward"):
+            out.append(f"**Done means:** {quest['reward']}")
+        if quest.get("why") or quest.get("reward"):
+            out.append("")
+        for obj in quest["objectives"]:
+            note = {"failed": " _(failed)_", "parked": " _(sent to /todo)_"}.get(obj["state"], "")
+            out.append(f"- [{marks.get(obj['state'], ' ')}] {obj['text']}{note}")
+        if quest["objectives"]:
+            out.append("")
+        if quest["journal"]:
+            out.append("**Decisions**")
+            out += [f"- {j['text']}" for j in quest["journal"]]
+            out.append("")
+        if quest["status"] == "awaiting":
+            out += [f"**Waiting on:** {quest['awaiting']}", ""]
+        if quest.get("outcome"):
+            out.append(f"**Outcome:** {quest['outcome']}  " if quest.get("loot") else f"**Outcome:** {quest['outcome']}")
+        if quest.get("loot"):
+            out.append("**Produced:** " + ", ".join(f"`{x}`" for x in quest["loot"]))
+        if quest.get("outcome") or quest.get("loot"):
+            out.append("")
+    rumors = [r for r in state["rumors"] if not r.get("quest") and not r.get("todo")]
+    if rumors:
+        out += ["## Noticed, not acted on", ""] + [f"- {r['text']}" for r in rumors] + [""]
+    return "\n".join(out).rstrip()
 
 
 def render_for_claude(state: dict) -> str:
@@ -688,6 +775,20 @@ def todo_store_path(root: str, sid: str) -> Path:
     return base / slug(root) / f"{sid}.json"
 
 
+# The part of todo.py's store this script reads or relies on. tests/ checks it
+# against todo.py itself, so a schema change there fails loudly here.
+TODO_STATE_KEYS = {"session_id", "project", "next_id", "todos"}
+TODO_ITEM_KEYS = {"id", "text", "status", "created", "mentions", "surfaced", "note",
+                  "about", "detail", "plan", "done_at", "dirty_files", "diff_stat",
+                  "cwd", "branch", "sha"}
+
+
+def todo_schema_ok(todos: dict) -> bool:
+    if not isinstance(todos, dict) or not TODO_STATE_KEYS <= set(todos):
+        return False
+    return all(isinstance(t, dict) and {"id", "text", "status"} <= set(t) for t in todos["todos"])
+
+
 def cmd_to_todo(state: dict, ref: str) -> str:
     """Copy a rumor, objective or quest into /todo's store for this session.
 
@@ -726,6 +827,9 @@ def cmd_to_todo(state: dict, ref: str) -> str:
         todos = json.loads(path.read_text()) if path.exists() else None
     except (json.JSONDecodeError, OSError):
         return f"/todo's store at {path} is unreadable; nothing sent."
+    if todos is not None and not todo_schema_ok(todos):
+        return (f"/todo's store at {path} isn't in the format quest-log knows; nothing sent. "
+                "claude-todo has probably changed its schema: update quest-log.")
     if todos is None:
         todos = {"session_id": sid, "project": root, "created": now(), "muted": False,
                  "turns": 0, "last_nudge_turn": 0, "last_nudge_at": time.time(),
@@ -754,6 +858,136 @@ def cmd_to_todo(state: dict, ref: str) -> str:
     return f"Sent {what} to /todo #{todo['id']}{hint}."
 
 
+# ------------------------------------------------------------- carry-over
+
+CARRYOVER_DAYS = 7  # how far back a new session looks for unfinished quests
+
+_MAIN_SLUG: "dict[str, str]" = {}
+
+
+def main_repo_slug(root: str) -> str:
+    """Slug of this repo's main checkout, the same for every worktree of it."""
+    if root not in _MAIN_SLUG:
+        common = _git("-C", root, "rev-parse", "--git-common-dir").strip()
+        if common:
+            path = Path(common)
+            main = (path if path.is_absolute() else Path(root) / path).resolve().parent
+            _MAIN_SLUG[root] = slug(str(main))
+        else:
+            _MAIN_SLUG[root] = ""
+    return _MAIN_SLUG[root]
+
+
+def project_stores(root: str, siblings: bool) -> "list[Path]":
+    """This project's store dir, plus its worktrees' when `siblings`. Same rules
+    as /todo: automatic carry-over stays in the project, `adopt` looks wider."""
+    own = store_base() / slug(root)
+    prefix = main_repo_slug(root) if siblings else ""
+    if not prefix or not store_base().is_dir():
+        return [own]
+    try:
+        others = sorted(d for d in store_base().iterdir()
+                        if d.is_dir() and d.name.startswith(prefix) and d != own)
+    except OSError:
+        others = []
+    return [own] + others
+
+
+def carryover(root: str, sid: str, siblings: bool = False) -> "list[tuple[Path, dict, dict]]":
+    """Open quests in other recent sessions: (file, that session's state, quest).
+
+    Newest file first, then by quest id, so the numbers `/quests adopt` prints
+    stay stable between listing and acting.
+    """
+    cutoff = time.time() - CARRYOVER_DAYS * 86400
+    files: "list[Path]" = []
+    for directory in project_stores(root, siblings):
+        try:
+            files += [f for f in directory.glob("*.json")
+                      if f.stem != sid and f.stat().st_mtime >= cutoff]
+        except OSError:
+            continue
+    files.sort(key=lambda p: (-p.stat().st_mtime, p.name))
+    found = []
+    for f in files:
+        try:
+            other = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        for quest in sorted(other.get("quests", []), key=lambda q: q["id"]):
+            if is_open(quest):
+                found.append((f, other, quest))
+    return found
+
+
+def source_label(path: Path, root: str) -> str:
+    label = f"session {path.stem[:8]}"
+    if path.parent != store_base() / slug(root):
+        label += f", {path.parent.name}"
+    return label
+
+
+def adopt_one(state: dict, path: Path, quest: dict) -> "dict | None":
+    """Close a quest in its source session and continue it in this one."""
+    try:
+        source = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    original = next((q for q in source.get("quests", []) if q["id"] == quest["id"]), None)
+    if not original or not is_open(original):
+        return None
+    original.update(status="adopted", done_at=now(), adopted_by=state["session_id"])
+    if source.get("tracked") == original["id"]:
+        retrack(source)
+    write_json(path, source)
+
+    # The source's asks are numbered in its own session; carry their words.
+    inherited = list(quest.get("inherited_asks", []))
+    for aid in quest["asks"]:
+        ask = find_ask(source, aid)
+        if ask:
+            inherited.append({"text": ask["text"], "turn": ask["turn"], "session": path.stem})
+    moved = json.loads(json.dumps(quest))
+    moved.update(id=state["next_id"], asks=[], inherited_asks=inherited,
+                 status="active", awaiting=None)
+    moved["journal"].append({"turn": state["turn"],
+                             "text": f"Adopted from session {path.stem[:8]} (was #{quest['id']})."})
+    if quest["status"] == "awaiting":
+        moved["journal"].append({"turn": state["turn"],
+                                 "text": f"Was awaiting the user there: {quest['awaiting']}"})
+    state["quests"].append(moved)
+    state["next_id"] += 1
+    state["tracked"] = moved["id"]
+    return moved
+
+
+def cmd_adopt(state: dict, target: "str | None") -> str:
+    root = state.get("project") or project_root()
+    candidates = carryover(root, state["session_id"], siblings=True)
+    if not candidates:
+        return "Nothing to adopt — no open quests in other recent sessions of this repo."
+    if not target:
+        lines = ["Unfinished quests from other sessions:"]
+        for i, (path, _, quest) in enumerate(candidates, 1):
+            done, total = progress(quest)
+            waiting = "  (was awaiting you)" if quest["status"] == "awaiting" else ""
+            lines.append(f"  {i}. {quest['title']}  [{done}/{total}]  ({source_label(path, root)}){waiting}")
+        lines += ["", "`/quests adopt <n>` continues one here, `/quests adopt all` takes them all."]
+        return "\n".join(lines)
+    if target.lower() == "all":
+        chosen = candidates
+    else:
+        index = int(target)
+        if not 1 <= index <= len(candidates):
+            return f"No candidate {index}. `/quests adopt` lists {len(candidates)}."
+        chosen = [candidates[index - 1]]
+    moved = [m for m in (adopt_one(state, p, q) for p, _, q in chosen) if m]
+    if not moved:
+        return "Those quests are no longer open in their sessions — run `/quests adopt` again."
+    logged(state, f"{glyphs()['t_adopt']}: " + ", ".join(f"#{m['id']} {m['title']}" for m in moved))
+    return "Adopted " + ", ".join(f"#{m['id']} {m['title']}" for m in moved) + "."
+
+
 # --------------------------------------------------------- commands (user-facing)
 
 def cmd_help() -> str:
@@ -775,6 +1009,14 @@ STEER
   /quests todo r1       objective, r1 for a rumor. This is how you give
                         permission; Claude never sends anything on its own
                         unless todo_handoff is 'auto'.
+  /quests adopt         Unfinished quests from other recent sessions of this
+                        repo, including its worktrees, numbered.
+  /quests adopt 2       Continue #2 in this session (or `adopt all`).
+
+SHARE
+  /quests chronicle     The session told as markdown: what you asked, what was
+                        decided, what came of it. For a PR description or a
+                        handoff.
 
 SETTINGS
   /quests config        Every setting, its value, and what it controls.
@@ -789,7 +1031,8 @@ WHAT CLAUDE LOGS
   journal    A decision and its reason, or a change of direction you gave.
   awaiting   A quest blocked on something only you can answer.
   rumor      Something Claude thought worth doing but did not act on. If it
-             did act, that's a quest or an objective, not a rumor.
+             did act, that's a quest or an objective, not a rumor. A question
+             for you is never a rumor: Claude asks it.
 
 FILES
   {here}/
@@ -803,9 +1046,7 @@ def cmd_config(key: "str | None" = None, raw: "str | None" = None) -> str:
             value = coerce(key, raw)
         except ValueError as exc:
             return f"Invalid value for {key}: {exc}"
-        stored = read_config_file()
-        stored[key] = value
-        write_json(config_path(), stored)
+        write_config_value(key, value)
         note = ""
         if sources.get(key) == "env":
             note = f"\nNOTE: CLAUDE_QUESTS_{key.upper()} is set and still overrides this."
@@ -831,6 +1072,8 @@ USER_COMMANDS = re.compile(
       | track \s+ \#?(?P<track>\d+)
       | abandon \s+ \#?(?P<abandon>\d+) (?: \s+ (?P<reason>.+) )?
       | todo \s+ (?P<todo>\#?\d+(?:\.\d+)? | r\d+)
+      | (?P<adopt>adopt) (?: \s+ (?P<adopt_what>\d+|all) )?
+      | (?P<chronicle>chronicle|story)
       | (?P<config>config) (?: \s+ (?P<cfg_key>\w+) (?: \s+ (?P<cfg_val>\S+) )? )?
       | (?P<help>help)
     )$""",
@@ -863,6 +1106,10 @@ def dispatch(raw: str) -> str:
             result = cmd_close(state, [g["abandon"]], {"reason": [f"{reason} (by you)"]}, "abandoned")
         elif g["todo"]:
             result = cmd_to_todo(state, g["todo"])
+        elif g["adopt"]:
+            result = cmd_adopt(state, g["adopt_what"])
+        elif g["chronicle"]:
+            return render_chronicle(state)
         elif g["config"]:
             if g["cfg_key"] and g["cfg_key"].lower() not in SETTINGS:
                 return f"No setting {g['cfg_key']!r}. Settings: {', '.join(SETTINGS)}."
@@ -905,16 +1152,56 @@ def protocol() -> str:
     )
     return f"""quest-log is on. You keep a quest log of what the user asked and where you're up to, so they can check at any point what was asked, why, what's done and what's left. Update it as things happen, never in a batch at the end. Each call prints one line; don't narrate the logging to the user. A reply starting "No …" or "usage:" means nothing was written: fix the call.
 
-CLI: {q} <verb> ...
+CLI: `quest <verb> ...` (the plugin puts `quest` on your Bash PATH; if it's not found, use {q}).
 - Each prompt arrives with "ask #N" in context. A request that needs edits or more than one step is a quest: `accept --title "..." --ask N --why "..." --reward "<what done means>" --objective "..." --objective "..."`. Chat and quick questions are not quests.
 - A later ask that extends or redirects a quest: `link <quest> <ask> "what changed"`. Don't rewrite the quest; the journal keeps the history.
 - While working: `check <quest>.<n>` when an objective lands, `objective <quest> "..."` when you find a new step, `journal <quest> "chose X over Y because Z"` for decisions and their consequences.
 - Blocked on the user: `await <quest> "the question"`. Finished and verified: `turn-in <quest> --outcome "..." --loot <path|sha|url>`. Dropped: `abandon <quest> --reason "..."`. `track <quest>` switches focus.
-- `rumor "..."` is for something worth doing that you thought of and did NOT act on. If you acted on it, it's a quest or objective instead (`accept ... --from-rumor r1`).
+- `rumor "..."` is for something worth doing that you thought of and did NOT act on. If you acted on it, it's a quest or objective instead (`accept ... --from-rumor r1`). A question only the user can answer ("should X return 1 or raise?") is never a rumor: ask it, and `await` the quest if you can't go on without the answer.
 - {handoff}"""
 
 
+def plugin_version() -> "str | None":
+    """The version this copy declares, read from its own plugin manifest.
+
+    Derived from __file__ rather than CLAUDE_PLUGIN_ROOT, which is expanded in
+    the hook command but not guaranteed in the process environment.
+    """
+    try:
+        manifest = Path(__file__).resolve().parents[2] / ".claude-plugin" / "plugin.json"
+        return str(json.loads(manifest.read_text())["version"]) or None
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
+
+
+def upgrade_note() -> "str | None":
+    """Release notes to print once, the first session after the version changes.
+
+    Always records the version it saw, so notes can't pile up or repeat. A fresh
+    install has nothing to be told about. 0.1.0 never recorded a version, so an
+    existing store is what tells an upgrade from 0.1.0 apart from a new install.
+    """
+    version = plugin_version()
+    if not version:
+        return None
+    stored = read_config_file()
+    seen = stored.get("last_seen_version")
+    if seen == version:
+        return None
+    write_config_value("last_seen_version", version)
+    if not seen:
+        try:
+            used = any(k != "last_seen_version" for k in stored) or any(
+                p.is_dir() for p in store_base().iterdir())
+        except OSError:
+            used = False
+        if not used:
+            return None
+    return UPGRADE_NOTES.get(version)
+
+
 def hook_session_start(payload: dict) -> None:
+    note = upgrade_note()  # always records, so a skipped note can't come back
     if cfg()["reminders"] == "off":
         return
     root = project_root()
@@ -928,7 +1215,23 @@ def hook_session_start(payload: dict) -> None:
             f"\n\nThe quest log survived a `{source}`; conversation detail behind it "
             f"may be gone. Current log:\n{render_for_claude(state)}"
         )
-    emit("SessionStart", context)
+    elif source in ("startup", "clear"):
+        carried = carryover(root, sid)  # this checkout only; `adopt` looks wider
+        if carried:
+            lines = [f"  {q['title']} ({'/'.join(map(str, progress(q)))}, session {p.stem[:8]})"
+                     for p, _, q in carried[:5]]
+            context += (
+                f"\n\n{len(carried)} quest(s) from earlier sessions in this project were left "
+                "unfinished. Mention them in one short line if relevant; don't work on them "
+                "unless asked. `/quests adopt` lets the user continue one here.\n" + "\n".join(lines)
+            )
+    emit("SessionStart", context, system=note)
+
+
+# Turns Claude Code starts on the user's behalf arrive through UserPromptSubmit
+# too. Found live: a subagent's hand-back was logged as ask #2, its task
+# notification as #3, so the quest giver's words weren't the user's.
+MACHINE_PROMPTS = ("<task-notification>", "<agent-message", "[SYSTEM NOTIFICATION")
 
 
 def hook_prompt(payload: dict) -> None:
@@ -938,6 +1241,8 @@ def hook_prompt(payload: dict) -> None:
     prompt = payload.get("prompt") or ""
     if not prompt.strip() or prompt.lstrip().startswith("/quests"):
         return  # nothing asked, or just reading the log
+    if prompt.lstrip().startswith(MACHINE_PROMPTS):
+        return  # a subagent or background task reporting back; the user said nothing
     root = project_root()
     sid = session_id(payload.get("session_id"))
     path = state_path(sid, root)
@@ -961,31 +1266,49 @@ def hook_prompt(payload: dict) -> None:
         lines.append("Awaiting the user: " + "; ".join(f"#{q['id']} \"{q['awaiting']}\"" for q in waiting)
                      + " — if this prompt answers one, pick it back up.")
 
-    # The nudge: edits since the last log write, shown once, then forgotten.
+    # The nudge: edits and commits since the last log write, shown once, then forgotten.
     unlogged = state.get("unlogged_files") or []
-    if unlogged:
-        shown = ", ".join(unlogged[:4]) + (f" +{len(unlogged) - 4} more" if len(unlogged) > 4 else "")
-        line = (f"Since your last log update you edited {len(unlogged)} file(s): {shown}. "
+    commits = state.get("unlogged_commits") or 0
+    if unlogged or commits:
+        did = []
+        if unlogged:
+            shown = ", ".join(unlogged[:4]) + (f" +{len(unlogged) - 4} more" if len(unlogged) > 4 else "")
+            did.append(f"edited {len(unlogged)} file(s): {shown}")
+        if commits:
+            did.append(f"made {commits} git commit(s)")
+        line = (f"Since your last log update you {' and '.join(did)}. "
                 "If that was progress, record it (check / objective / journal / accept).")
         if previous and not previous.get("quest"):
             line += f" Ask #{previous['id']} isn't linked to any quest."
         lines.append(line)
-        state["unlogged_files"] = []
+        state["unlogged_files"], state["unlogged_commits"] = [], 0
 
     write_json(path, state)
     emit("UserPromptSubmit", "\n".join(lines))
 
 
+GIT_COMMIT = re.compile(r"(?:^|[;&|(\s])git(?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+commit(?![\w-])")
+
+
 def hook_post_tool(payload: dict) -> None:
-    """PostToolUse on file edits: remember what changed since the last log write."""
+    """PostToolUse on file edits and commits: what changed since the last log write."""
     if cfg()["reminders"] == "off":
         return
+    tool_input = payload.get("tool_input") or {}
+    if payload.get("tool_name") == "Bash":
+        command = tool_input.get("command") or ""
+        if "quest.py" in command or not GIT_COMMIT.search(command):
+            return  # most Bash is verification; a commit is a milestone
     root = project_root()
     sid = session_id(payload.get("session_id"))
     path = state_path(sid, root)
     if not path.exists():
         return
-    tool_input = payload.get("tool_input") or {}
+    if payload.get("tool_name") == "Bash":
+        state = load(path, sid, root)
+        state["unlogged_commits"] = (state.get("unlogged_commits") or 0) + 1
+        write_json(path, state)
+        return
     target = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not target:
         return
@@ -1011,19 +1334,57 @@ def hook_stop(payload: dict) -> None:
     state["toasts"] = []
     extra = None
     unlogged = state.get("unlogged_files") or []
+    commits = state.get("unlogged_commits") or 0
     # stop_hook_active means we already blocked once this turn; never loop.
-    if conf["reminders"] == "strict" and unlogged and not payload.get("stop_hook_active"):
+    if conf["reminders"] == "strict" and (unlogged or commits) and not payload.get("stop_hook_active"):
+        did = f"edited {len(unlogged)} file(s) ({', '.join(unlogged[:4])})" if unlogged else ""
+        if commits:
+            did += (" and " if did else "") + f"made {commits} commit(s)"
         extra = {
             "decision": "block",
             "reason": (
-                f"quest-log: you edited {len(unlogged)} file(s) this turn "
-                f"({', '.join(unlogged[:4])}) without updating the quest log. Record the "
-                f"progress, or if it was trivial, run `{cli()} ack`, then finish."
+                f"quest-log: you {did} this turn without updating the quest log. Record the "
+                "progress, or if it was trivial, run `quest ack`, then finish."
             ),
         }
     write_json(path, state)
     system = "\n".join(toasts) if toasts and conf["toasts"] == "on" else None
     emit(None, system=system, extra=extra)
+
+
+def render_statusline(state: dict) -> str:
+    """One line for Claude Code's status line: the tracked quest and what's next."""
+    rpg = cfg()["style"] == "rpg"
+    quest = find_quest(state, state["tracked"]) if state.get("tracked") else None
+    parts = []
+    if quest and is_open(quest):
+        done, total = progress(quest)
+        parts.append(("⚔ " if rpg else "") + clip(quest["title"], 40))
+        if total:
+            parts.append(f"{done}/{total}")
+        cur = current_objective(quest)
+        if cur:
+            parts.append(("▸ " if rpg else "next: ") + clip(cur[1]["text"], 40))
+    waiting = sum(q["status"] == "awaiting" for q in state["quests"])
+    if waiting:
+        parts.append(("⏸ " if rpg else "") + f"{waiting} awaiting you")
+    return " · ".join(parts)
+
+
+def statusline(payload: dict) -> str:
+    """`statusLine` command: reads Claude Code's status JSON on stdin.
+
+    The status line runs outside the session's Bash tool, so the session and
+    directory come from the payload rather than the environment.
+    """
+    cwd = (payload.get("workspace") or {}).get("current_dir") or payload.get("cwd")
+    if cwd and os.path.isdir(cwd):
+        os.chdir(cwd)
+    root, sid = project_root(), session_id(payload.get("session_id"))
+    path = state_path(sid, root)
+    if not path.exists():
+        return ""
+    return render_statusline(load(path, sid, root))
 
 
 HOOKS = {
@@ -1053,6 +1414,13 @@ def main() -> int:
             HOOKS[cmd](payload)
         except Exception:
             pass  # the log must never break a session
+        return 0
+
+    if cmd == "statusline":
+        try:
+            print(statusline(json.load(sys.stdin)))
+        except Exception:
+            pass  # a broken status line must not show a traceback
         return 0
 
     if cmd == "dispatch":

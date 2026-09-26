@@ -50,11 +50,21 @@ claude plugin install quest-log@toolshed
 Start a new session so the hooks load. There's nothing else to do: Claude
 starts keeping the log on its own.
 
-**Use auto mode** (shift+tab to cycle modes, or `claude --permission-mode auto`).
-Claude updates the log with a small script as it works, several times a turn.
-In the default permission mode, each of those updates asks for your approval,
-which defeats the point of a log that keeps itself. Auto mode runs them without
-asking.
+**Let Claude write the log without asking.** Claude updates the log with a
+small `quest` command as it works, several times a turn. In the default
+permission mode each of those asks for your approval, which defeats the point
+of a log that keeps itself. Either:
+
+- allow the command once, in `~/.claude/settings.json`:
+
+  ```json
+  { "permissions": { "allow": ["Bash(quest *)"] } }
+  ```
+
+  The plugin puts `quest` on Claude's PATH, so the rule keeps working when an
+  update moves the install; or
+- use auto mode (shift+tab to cycle modes, or `claude --permission-mode auto`),
+  which runs them without asking.
 
 ## Usage
 
@@ -65,6 +75,8 @@ asking.
 | `/quests track 3` | Point Claude at #3 next. |
 | `/quests abandon 3 [reason]` | Drop it. |
 | `/quests todo 3` · `3.2` · `r1` | Send a quest, objective or rumor to `/todo`. |
+| `/quests adopt [n\|all]` | Continue unfinished quests from earlier sessions of this repo (worktrees included). |
+| `/quests chronicle` | The session as markdown, for a PR description or a handoff. |
 | `/quests config` | Settings. |
 | `/quests help` | The full reference. |
 
@@ -81,12 +93,41 @@ asking.
 - **Rumor**: something Claude thought was worth doing but *didn't* act on. If
   it did act (say, in auto mode), that goes on the log as real work instead.
 
+When a session starts, Claude hears about quests left unfinished in this
+project over the last week, and mentions them if they're relevant.
+
+## Status line
+
+Show the tracked quest under the prompt:
+
+```
+⚔ Ship quest-log · 3/5 · ▸ Implement hooks · ⏸ 1 awaiting you
+```
+
+Plugins can't set the status line themselves, so add it to
+`~/.claude/settings.json`. The command finds the newest installed copy, so it
+survives updates:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "python3 \"$(ls -d ~/.claude/plugins/cache/toolshed/quest-log/*/ | sort -V | tail -1)skills/quests/quest.py\" statusline"
+  }
+}
+```
+
+Use your `CLAUDE_CONFIG_DIR` in place of `~/.claude` if you set one. It prints
+nothing when there's no quest, so it combines with an existing status line:
+run both and join the output, e.g. `echo "$(your-line) $(quest-line)"` with
+the JSON on stdin passed to each (`input=$(cat)` first, then `echo "$input" |`).
+
 ## Settings
 
 | Key | Default | Effect |
 | :--- | :--- | :--- |
 | `style` | `rpg` | `plain` drops the emoji and quest vocabulary, which saves tokens when Claude relays the log. |
-| `reminders` | `nudge` | `nudge`: after Claude edits files without logging them, it's told on your next prompt. `strict`: it can't end a turn until it logs them. `off`: no hooks, no log keeping. |
+| `reminders` | `nudge` | `nudge`: after Claude edits files or commits without logging it, it's told on your next prompt. `strict`: it can't end a turn until it logs them. `off`: no hooks, no log keeping. |
 | `toasts` | `on` | Terminal notices when the log changes. |
 | `todo_handoff` | `ask` | `auto` also copies every rumor to `/todo` as it's noted. |
 
@@ -104,5 +145,5 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-0.1.0, early. See [DESIGN.md](./DESIGN.md) for how it works and what's still
+0.2.0, early. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
 open.

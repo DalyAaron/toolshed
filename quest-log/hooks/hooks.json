@@ -1,5 +1,5 @@
 {
-  "description": "quest-log: brief Claude on the log protocol at session start, record each prompt as an ask, notice unlogged edits, and show log changes in the terminal.",
+  "description": "quest-log: brief Claude on the log protocol at session start, record each prompt as an ask, notice unlogged edits and commits, and show log changes in the terminal.",
   "hooks": {
     "SessionStart": [
       {
@@ -25,7 +25,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",

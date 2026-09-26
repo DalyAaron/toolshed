@@ -1,0 +1,4 @@
+#!/bin/sh
+# `quest <verb> ...` on the Bash tool's PATH while the plugin is enabled, so one
+# allow rule, Bash(quest *), covers every log write whatever the install path.
+exec python3 "$(dirname "$0")/../skills/quests/quest.py" "$@"

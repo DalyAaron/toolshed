@@ -1,7 +1,7 @@
 ---
 name: quests
 description: Show the quest log Claude keeps of this session — what was asked, why, what's done, what's left, and what's waiting on the user.
-argument-hint: "[n] | track N | abandon N [reason] | todo N|N.M|rN | config | help"
+argument-hint: "[n] | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | config | help"
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/quest.py *)
 ---
@@ -35,18 +35,28 @@ If you notice the log is stale — work you did this session that isn't on it �
 fix it with the CLI *after* relaying, then say in one line what you added. The
 user is reading the log because they want it to be true.
 
+### `# Chronicle` — the session as markdown
+
+Relay it **verbatim as markdown**, not in a code block: it's meant to be
+rendered, and copied into a PR description or a handoff as-is. No commentary.
+
+### `Unfinished quests from other sessions` — the adopt list
+
+Relay it verbatim in a code block.
+
 ### `HELP:` / `CONFIG:` — reference
 
 Relay verbatim in a code block, no commentary.
 
-### `Tracking` / `Sent … to /todo` / `#N abandoned` / `Set <key>` — a state change
+### `Tracking` / `Sent … to /todo` / `#N abandoned` / `Set <key>` / `Adopted` — a state change
 
 One line confirming it. If the user abandoned the quest you were working on,
-stop working on it.
+stop working on it. An adopted quest is now yours to continue: it's tracked,
+and `/quests <n>` has its history, but don't start on it unless the user asks.
 
 `/quests todo …` is the user giving permission to hand that entry to `/todo`, so
 nothing more needs asking.
 
-### `UNKNOWN:` / `No quest` — a miss
+### `UNKNOWN:` / `No quest` / `Nothing to adopt` — a miss
 
 Relay it in one line.
