@@ -50,6 +50,12 @@ claude plugin install quest-log@toolshed
 Start a new session so the hooks load. There's nothing else to do: Claude
 starts keeping the log on its own.
 
+**Use auto mode** (shift+tab to cycle modes, or `claude --permission-mode auto`).
+Claude updates the log with a small script as it works, several times a turn.
+In the default permission mode, each of those updates asks for your approval,
+which defeats the point of a log that keeps itself. Auto mode runs them without
+asking.
+
 ## Usage
 
 | Command | What it does |
@@ -98,6 +104,5 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-0.1.0, early. See [DESIGN.md](./DESIGN.md) for how it works and what still needs
-verifying, including the permission rule that stops every log write from
-prompting in the default permission mode.
+0.1.0, early. See [DESIGN.md](./DESIGN.md) for how it works and what's still
+open.

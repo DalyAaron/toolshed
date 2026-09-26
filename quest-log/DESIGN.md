@@ -167,10 +167,11 @@ quest.py hook-{session-start,prompt,post-tool,stop}
 ## To verify before 1.0
 
 - **Permission prompts.** Claude calls `quest.py` throughout the session, outside
-  any skill, so `allowed-tools` doesn't cover it. Without an allow rule, every
-  log write prompts in the default permission mode. Work out the right rule for
-  a path that moves on every plugin update, or a way for the plugin to provide
-  it, and document it in the README.
+  any skill, so `allowed-tools` doesn't cover it, and every log write prompts in
+  the default permission mode. For 0.1.0 the README recommends auto mode, which
+  runs them without asking. A real fix still needs an allow rule that survives
+  the install path moving on every plugin update, or a way for the plugin to
+  provide one.
 
 Verified end to end with `claude -p --plugin-dir quest-log` on a scratch repo:
 the protocol arrives at `SessionStart` and `resume`, asks are recorded verbatim,
