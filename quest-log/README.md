@@ -162,6 +162,28 @@ of a log that keeps itself. Either:
   first.
 - **Rumor**: something Claude thought was worth doing but *didn't* act on. If
   it did act (say, in auto mode), that goes on the log as real work instead.
+- **Gold and XP**: each objective checked off pays 1 💰 and 10 xp, each quest
+  turned in 2 💰 and 20 xp. Gold shows at the bottom right of the `/quests`
+  frame, your rank and XP bar at the top. Both are yours, not the session's:
+  they carry across sessions and repos.
+
+## The shop
+
+`/quests shop` is Trinkets and Tronkets, selling looks for the log: frames
+(double, heavy, ASCII), progress bars (blocks, beads, hearts), a crown
+or gem over completed quests, and banners for the header, including one in
+your own words. Everything is bought once and kept: `/quests inventory` shows
+what you own, `/quests equip <item>` and `/quests unequip <item>` switch
+between them.
+
+`/quests engrave <n>` hangs a turned-in quest in `/quests trophies` as a
+plaque, for 3 💰. Plaques stay across repos; unequip one to put it in storage.
+
+Ranks come from XP, which is never spent: Apprentice (0–300), Journeyman
+(301–1000), Artificer (1001–2000), Archmage (2001+).
+
+Claude only earns gold. It never spends it, and nothing in the shop changes
+how Claude works.
 
 When a session starts, Claude hears about quests left unfinished in this
 project over the last week, and mentions them if they're relevant.
@@ -232,16 +254,32 @@ Set with `/quests config <key> <value>`, or for one session with
 ```
 ~/.claude/quests/<project>/<session>.json   the log
 ~/.claude/quests/config.json                settings
+~/.claude/quests/wallet.json                gold, xp, inventory, plaques
 ```
 
 Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-1.1.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
+1.2.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
 open.
 
 ## Changelog
+
+### 1.2.0
+
+- **Gold and XP.** Each objective checked off pays 1 💰 and 10 xp, each quest
+  turned in 2 💰 and 20 xp, once each. Both belong to your Claude profile and
+  carry across sessions and repos. Gold sits at the bottom right of the frame.
+- **Ranks.** XP sets your rank, Apprentice, Journeyman, Artificer, Archmage,
+  shown with a progress bar at the top of the log.
+- **`/quests shop`**: Trinkets and Tronkets sells frames, progress bars,
+  trophies and banners. Bought once, then `/quests inventory`, `equip` and
+  `unequip` switch between them.
+- **`/quests trophies`**: `/quests engrave <n>` hangs a turned-in quest in the
+  hall as a plaque.
+- **A shorter `/quests` hint.** track, abandon, todo and adopt show as a tip
+  at the bottom of the log when they'd do something.
 
 ### 1.1.0
 

@@ -1,7 +1,7 @@
 ---
 name: quests
 description: Show the quest log Claude keeps of this session — what was asked, why, what's done, what's left, and what's waiting on the user.
-argument-hint: "[n] | done | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | live | statusline [off] | config | help"
+argument-hint: "[n] | done | shop | inventory | chronicle | live | config | help"
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/quest.py *)
 ---
@@ -21,7 +21,10 @@ QUEST_EOF
 
 Match the first word of the output above.
 
-### `╭─ 📜 QUEST LOG`, `Session log`, `QUEST #N` — the log, or one entry
+### A frame around `📜 QUEST LOG`, `Session log`, `QUEST #N` — the log, or one entry
+
+The frame's border depends on the skin the user has equipped (`╭─`, `╔═`, `┏━`,
+`+-`); what matters is the title.
 
 Relay it **verbatim in a code block**. It is already laid out for a terminal:
 don't reflow it, summarise it, turn it into a table, or add commentary. The user
@@ -49,6 +52,11 @@ Relay it verbatim in a code block.
 Relay it as is, the command in a code block so it's easy to copy. Then carry
 on with anything you were doing; the pane needs nothing from you.
 
+### A frame around `TRINKETS AND TRONKETS`, `🎒 INVENTORY` or `HALL OF TROPHIES` — the shop
+
+Relay it **verbatim in a code block**, no commentary. It's the user's to
+browse; don't suggest what to buy.
+
 ### `HELP:` / `CONFIG:` — reference
 
 Relay verbatim in a code block, no commentary.
@@ -62,6 +70,11 @@ and `/quests <n>` has its history, but don't start on it unless the user asks.
 `/quests todo …` is the user giving permission to hand that entry to `/todo`, so
 nothing more needs asking.
 
-### `UNKNOWN:` / `No quest` / `Nothing to adopt` — a miss
+### `Bought` / `Equipped` / `Unequipped` / `Engraved` / `Banner set` — the user spent gold or changed their look
+
+One line confirming it. Gold and cosmetics are the user's: never buy, equip or
+engrave anything yourself.
+
+### `UNKNOWN:` / `No quest` / `Nothing to adopt` / anything else — a miss
 
 Relay it in one line.

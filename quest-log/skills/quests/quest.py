@@ -11,6 +11,7 @@ renders the result. See DESIGN.md for why it is shaped this way.
 
 import json
 import os
+import random
 import re
 import shlex
 import subprocess
@@ -80,6 +81,11 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.2.0": (
+        "/quests 1.2.0 — finished work now earns gold 💰 and XP, across every repo.\n"
+        "Spend gold at `/quests shop` on frames, bars, trophies and banners, and\n"
+        "hang finished quests in `/quests trophies`. Your rank tops the log."
+    ),
     "1.1.0": (
         "/quests 1.1.0 — the log is laid out like a game's quest log now. New:\n"
         "`/quests live` (the log beside Claude as it works), `/quests statusline`\n"
@@ -150,6 +156,126 @@ def write_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     os.replace(tmp, path)  # atomic; a hook and a CLI call can't clobber
+
+
+# Gold and XP are the profile's, not the session's: one purse across every repo
+# and session, next to config.json. Paid once per objective and once per quest,
+# however often a quest is reopened, turned in again or adopted. Gold is spent
+# in the shop; XP is never spent, and sets the rank.
+GOLD = "💰"
+GOLD_OBJECTIVE, GOLD_QUEST = 1, 2
+XP_OBJECTIVE, XP_QUEST = 10, 20
+RANKS = (("Apprentice", 0), ("Journeyman", 301), ("Artificer", 1001), ("Archmage", 2001))
+PLAQUE_PRICE = 3
+BANNER_CELLS = 24  # a custom banner has to share the header with the project
+
+# Bought once, then equipped or not from the inventory. Price 0 is the look
+# everyone starts with, and what unequipping falls back to.
+SHOP = {
+    "rounded": {"slot": "frame", "name": "Rounded frame", "price": 0, "look": ("╭", "╮", "╰", "╯", "─")},
+    "double": {"slot": "frame", "name": "Double frame", "price": 10, "look": ("╔", "╗", "╚", "╝", "═")},
+    "heavy": {"slot": "frame", "name": "Heavy frame", "price": 10, "look": ("┏", "┓", "┗", "┛", "━")},
+    "ascii": {"slot": "frame", "name": "ASCII frame", "note": "for any terminal", "price": 5, "look": ("+", "+", "+", "+", "-")},
+    "classic": {"slot": "bar", "name": "Classic bar", "price": 0, "look": ("▰", "▱")},
+    "blocks": {"slot": "bar", "name": "Blocks bar", "price": 5, "look": ("■", "□")},
+    "beads": {"slot": "bar", "name": "Beads bar", "price": 5, "look": ("●", "○")},
+    "hearts": {"slot": "bar", "name": "Hearts bar", "price": 8, "look": ("♥", "♡")},
+    "cup": {"slot": "trophy", "name": "Cup trophy", "note": "marks completed quests", "price": 0, "look": "🏆"},
+    "crown": {"slot": "trophy", "name": "Crown trophy", "note": "marks completed quests", "price": 15, "look": "👑"},
+    "gem": {"slot": "trophy", "name": "Gem trophy", "note": "marks completed quests", "price": 25, "look": "💎"},
+    "refactorer": {"slot": "banner", "name": "Refactorer banner", "price": 8, "look": "the Refactorer"},
+    "bugslayer": {"slot": "banner", "name": "Bug Slayer banner", "price": 8, "look": "Bug Slayer"},
+    "buildkeeper": {"slot": "banner", "name": "Keeper banner", "price": 8, "look": "Keeper of the Build"},
+    "custom": {"slot": "banner", "name": "Custom banner", "note": "your own words", "price": 20, "look": None},
+}
+SLOTS = {"frame": "rounded", "bar": "classic", "trophy": "cup", "banner": None}
+
+
+def wallet_path() -> Path:
+    return store_base() / "wallet.json"
+
+
+def read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def count(value: object) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+_WALLET: "tuple[int, dict] | None" = None
+
+
+def wallet() -> dict:
+    """The purse, re-read when the file changes so the live view keeps up."""
+    global _WALLET
+    path = wallet_path()
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    if _WALLET is None or _WALLET[0] != stamp:
+        purse = read_json(path)
+        purse["gold"] = count(purse.get("gold"))
+        if "xp" not in purse:  # a purse from before XP: nothing had been spent, so gold is what was earned
+            purse["xp"] = purse["gold"] * XP_OBJECTIVE // GOLD_OBJECTIVE
+        purse["xp"] = count(purse["xp"])
+        for key, empty in (("owned", []), ("equipped", {}), ("plaques", [])):
+            if not isinstance(purse.get(key), type(empty)):
+                purse[key] = empty
+        _WALLET = (stamp, purse)
+    return _WALLET[1]
+
+
+def save_wallet(purse: dict) -> None:
+    global _WALLET
+    purse["updated"] = now()
+    write_json(wallet_path(), purse)
+    _WALLET = (wallet_path().stat().st_mtime_ns, purse)
+
+
+def gold() -> int:
+    return wallet()["gold"]
+
+
+def rank(xp: int) -> "tuple[str, int, tuple[str, int] | None]":
+    """The rank for `xp`, where it starts, and the next one, if any."""
+    i = max(n for n, (_, floor) in enumerate(RANKS) if xp >= floor)
+    return RANKS[i][0], RANKS[i][1], RANKS[i + 1] if i + 1 < len(RANKS) else None
+
+
+def earn(state: dict, quest: dict, coins: int, xp: int) -> None:
+    purse = wallet()
+    before = rank(purse["xp"])[0]
+    purse["gold"] += coins
+    purse["xp"] += xp
+    save_wallet(purse)
+    after = rank(purse["xp"])[0]
+    if after != before:
+        logged(state, f"🏅 Rank up: {after}", "rank", quest)
+
+
+def owns(item: str) -> bool:
+    return SHOP[item]["price"] == 0 or item in wallet()["owned"]
+
+
+def equipped(slot: str) -> "str | None":
+    item = wallet()["equipped"].get(slot, SLOTS[slot])
+    return item if item in SHOP and SHOP[item]["slot"] == slot and owns(item) else SLOTS[slot]
+
+
+def look(slot: str):
+    item = equipped(slot)
+    if item == "custom":
+        return wallet().get("banner_text") or None
+    return SHOP[item]["look"] if item else None
 
 
 def write_config_value(key: str, value: object) -> None:
@@ -461,18 +587,48 @@ def wrap(text: str, width: int) -> "list[str]":
     return lines + ([line] if line else [])
 
 
+def meter(fraction: float, size: int = BAR) -> str:
+    """A bar in the equipped skin."""
+    full, empty = look("bar")
+    filled = round(size * min(1.0, max(0.0, fraction)))
+    return full * filled + empty * (size - filled)
+
+
 def bar(quest: dict) -> str:
     done, total = progress(quest)
     if not total:
         return ""
-    filled = round(BAR * done / total)
-    return "▰" * filled + "▱" * (BAR - filled) + f" {done}/{total}"
+    return meter(done / total) + f" {done}/{total}"
 
 
-def rule(left: str, right: str, corner_l: str, corner_r: str) -> str:
-    """`╭─ left ──────── right ─╮`, exactly WIDTH columns."""
-    left, right = f"{corner_l}─ {left} ", f" {right} ─{corner_r}" if right else f"─{corner_r}"
-    return left + "─" * max(2, WIDTH - cells(left) - cells(right)) + right
+def rule(left: str, right: str, top: bool = True) -> str:
+    """`╭─ left ──────── right ─╮` in the equipped frame, exactly WIDTH columns."""
+    tl, tr, bl, br, line = look("frame")
+    corner_l, corner_r = (tl, tr) if top else (bl, br)
+    left = f"{corner_l}{line} {left} "
+    right = f" {right} {line}{corner_r}" if right else f"{line}{corner_r}"
+    return left + line * max(2, WIDTH - cells(left) - cells(right)) + right
+
+
+def spread(left: str, right: str) -> str:
+    """`left` and `right` at either end of a WIDTH-column row."""
+    return left + " " * max(1, WIDTH - cells(left) - cells(right)) + right
+
+
+def rank_row() -> str:
+    """` 🏅 JOURNEYMAN · 150 xp ........ ▰▰▰▱▱▱▱▱ 151 to Artificer`"""
+    xp = wallet()["xp"]
+    name, floor, up = rank(xp)
+    if up:
+        right = meter((xp - floor) / (up[1] - floor)) + f" {up[1] - xp} to {up[0]}"
+    else:
+        right = meter(1) + " max rank"
+    return spread(f" 🏅 {name.upper()} · {xp} xp", right)
+
+
+def title_banner(head: str) -> str:
+    banner = look("banner")
+    return f"{head} · ⚔ {fit(banner, BANNER_CELLS)}" if banner else head
 
 
 def quest_row(quest: dict, lead: str) -> str:
@@ -521,12 +677,27 @@ def closed_row(quest: dict) -> str:
     return row + (" — " + fit(tail, room) if room >= 12 else "")
 
 
+def tips(state: dict) -> "list[str]":
+    """The /quests commands that would do something right now, for the log's
+    foot, so the argument hint can stay short."""
+    open_quests = any(is_open(q) for q in state["quests"])
+    rumors = any(not r.get("quest") and not r.get("todo") for r in state["rumors"])
+    out = []
+    if open_quests:
+        out += ["track <n>", "abandon <n> [reason]"]
+    if open_quests or rumors:
+        out.append("todo " + "|".join((["<n>", "<n.m>"] if open_quests else []) + (["r<n>"] if rumors else [])))
+    if carryover(state.get("project") or project_root(), state["session_id"], siblings=True):
+        out.append("adopt")
+    return out
+
+
 def render_rpg(state: dict, live: "str | None" = None, all_done: bool = False) -> str:
     quests = state["quests"]
     tracked = state.get("tracked")
     rumors = [r for r in state["rumors"] if not r.get("quest") and not r.get("todo")]
     project = Path(state.get("project") or project_root()).name
-    out = [rule("📜 QUEST LOG", f"{project} · turn {state.get('turn', 0)}", "╭", "╮"), ""]
+    out = [rule(title_banner("📜 QUEST LOG"), f"{project} · turn {state.get('turn', 0)}"), rank_row(), ""]
 
     waiting = [q for q in quests if q["status"] == "awaiting"]
     active = sorted((q for q in quests if q["status"] == "active"),
@@ -558,18 +729,24 @@ def render_rpg(state: dict, live: "str | None" = None, all_done: bool = False) -
         out += [f"   r{r['id']}  " + fit(r["text"], WIDTH - 6 - len(str(r["id"]))) for r in rumors]
         out.append("")
     if closed:
-        out.append(f" 🏆 COMPLETED ({len(closed)})")
+        out.append(f" {look('trophy')} COMPLETED ({len(closed)})")
         shown = closed if all_done else closed[:RECENT_DONE]
         out += [closed_row(q) for q in shown]
         if len(closed) > len(shown):
             out.append(f"     + {len(closed) - len(shown)} more · /quests done lists them all")
         out.append("")
 
+    purse = f"{gold()} {GOLD}"
     if live:
-        out.append(rule(live, "", "╰", "╯"))
+        out.append(rule(live, purse, top=False))
     else:
+        hints = tips(state)
+        if hints:
+            if out[-1]:
+                out.append("")
+            out.append(" 💡 " + fit("/quests " + " · ".join(hints), WIDTH - 4))
         focus = f"/quests {tracked} full entry · " if tracked else ""
-        out.append(rule(focus + "/quests help", "", "╰", "╯"))
+        out.append(rule(focus + "/quests help", purse, top=False))
         if cfg_sources()["style"] == "default":
             out.append("tip: `/quests config style plain` drops the flavor and saves tokens")
     return "\n".join(out)
@@ -625,6 +802,9 @@ def render_log(state: dict, live: "str | None" = None, all_done: bool = False) -
         out += ["", live]
     else:
         out += ["", "`/quests <n>` shows a full entry · `/quests help` for everything else"]
+        hints = tips(state)
+        if hints:
+            out.append("Also: /quests " + " · ".join(hints))
     return "\n".join(out)
 
 
@@ -848,6 +1028,9 @@ def cmd_mark(state: dict, refs: "list[str]", new_state: str) -> str:
         toast = g["t_check"] if new_state == "done" else g["t_fail"]
         logged(state, f"{toast}: {obj['text']} (#{quest['id']} {done}/{total})",
                "check" if new_state == "done" else "fail", quest)
+        if new_state == "done" and not obj.get("paid"):
+            obj["paid"] = True
+            earn(state, quest, GOLD_OBJECTIVE, XP_OBJECTIVE)
         line = f"{quest['id']}.{n} {new_state} — #{quest['id']} {done}/{total}"
         if new_state == "done" and done == total:
             line += " — every objective done; turn it in once the reward is verified"
@@ -949,6 +1132,9 @@ def cmd_close(state: dict, pos: "list[str]", flags: "dict[str, list[str]]", stat
     if state.get("tracked") == quest["id"]:
         retrack(state)
     logged(state, toast, "turn_in" if status == "done" else "abandon", quest)
+    if status == "done" and not quest.get("paid"):
+        quest["paid"] = True
+        earn(state, quest, GOLD_QUEST, XP_QUEST)
     left = sum(o["state"] == "open" for o in quest["objectives"])
     note = f" ({left} objective(s) were still open)" if left else ""
     verb = "turned in" if status == "done" else "abandoned"
@@ -1069,6 +1255,247 @@ def cmd_to_todo(state: dict, ref: str) -> str:
 CARRYOVER_DAYS = 7  # how far back a new session looks for unfinished quests
 
 _MAIN_SLUG: "dict[str, str]" = {}
+
+
+# ------------------------------------------------------------------ the shop
+
+SHOP_SECTIONS = (("frame", "⚒ FRAMES"), ("bar", "⚗ PROGRESS BARS"), ("trophy", "✦ TROPHIES"), ("banner", "⚑ BANNERS"))
+MERCHANT = r"""
+                           (   )
+                          (    )
+                           (    )
+                          (    )
+                            )  )
+                           (  (                  /\
+                            (_)                 /  \  /\
+                    ________[_]________      /\/    \/  \
+           /\      /\        ______    \    /   /\/\  /\/\
+          /  \    //_\       \    /\    \  /\/\/    \/    \
+   /\    / /\/\  //___\       \__/  \    \/
+  /  \  /\/    \//_____\       \ |[]|     \
+ /\/\/\/       //_______\       \|__|      \
+/      \      /XXXXXXXXXX\                  \
+        \    /_I_II  I__I_\__________________\
+               I_I|  I__I_____[]_|_[]_____I
+               I_II  I__I_____[]_|_[]_____I
+               I II__I  I     XXXXXXX     I
+            ~~~~~"   "~~~~~~~~~~~~~~~~~~~~~~~~
+""".strip("\n").splitlines()
+
+SAYINGS = (
+    "Coin for comfort, traveller.",
+    "Finest skins this side of the repo.",
+    "No refunds. No merge conflicts.",
+    "Back again? I kept the good stuff aside.",
+    "Every frame hand-drawn, every bar hand-filled.",
+    "Gold spends. XP stays. Choose wisely.",
+    "A crown for the one who ships on Fridays.",
+    "Mind the smoke, it's only the build.",
+    "Looking is free. Mostly.",
+    "They say an Archmage once bought the lot.",
+)
+
+
+def preview(item: str) -> str:
+    """What an item looks like, for the shop and inventory rows."""
+    spec = SHOP[item]
+    if spec["slot"] == "frame":
+        tl, tr, _, _, line = spec["look"]
+        return tl + line * 2 + tr
+    if spec["slot"] == "bar":
+        return spec["look"][0] * 3 + spec["look"][1] * 2
+    if spec["slot"] == "trophy":
+        return spec["look"]
+    return "⚑"
+
+
+def ware_name(item: str) -> str:
+    spec = SHOP[item]
+    if item == "custom" and wallet().get("banner_text"):
+        return f"{spec['name']} · ⚔ {wallet()['banner_text']}"
+    if spec["slot"] == "banner" and spec["look"]:
+        return f"{spec['name']} · ⚔ {spec['look']}"
+    return spec["name"] + (f" · {spec['note']}" if spec.get("note") else "")
+
+
+def ware_row(mark: str, item: str, name: str, status: str) -> str:
+    art = preview(item) if item in SHOP else "▭"
+    lead = f"   {mark}{item.ljust(12)} {art}" + " " * max(1, 11 - cells(art))
+    return spread(lead + fit(name, WIDTH - cells(lead) - cells(status) - 2), status)
+
+
+def render_shop() -> str:
+    purse = wallet()
+    out = [rule("TRINKETS AND TRONKETS 🏆", f"purse {purse['gold']} {GOLD}"), ""]
+    out += list(MERCHANT)
+    out += ["", f'           "{random.choice(SAYINGS)}"', ""]
+    for slot, head in SHOP_SECTIONS:
+        out.append(f" {head}")
+        for item, spec in SHOP.items():
+            if spec["slot"] != slot or not spec["price"]:
+                continue
+            if equipped(slot) == item:
+                status = "◆ equipped"
+            elif owns(item):
+                status = "◇ owned"
+            else:
+                status = f"{spec['price']} {GOLD}"
+            out.append(ware_row("", item, ware_name(item), status))
+        out.append("")
+    out.append(" ⚜ PLAQUES")
+    out.append(ware_row("", "engrave", "A finished quest, hung in the hall",
+                        f"{PLAQUE_PRICE} {GOLD} each"))
+    out.append("")
+    out.append(rule("/quests buy <item> · /quests inventory", "", top=False))
+    return "\n".join(out)
+
+
+def render_inventory() -> str:
+    purse = wallet()
+    out = [rule("🎒 INVENTORY", f"{purse['gold']} {GOLD}"), rank_row(), ""]
+    for slot, head in SHOP_SECTIONS:
+        items = [i for i, spec in SHOP.items() if spec["slot"] == slot and owns(i)]
+        if not items:
+            continue
+        out.append(f" {head}")
+        for item in items:
+            on = equipped(slot) == item
+            name = ware_name(item)
+            if item == "custom" and not purse.get("banner_text"):
+                name += " · /quests banner <text>"
+            out.append(ware_row("◆ " if on else "◇ ", item, name, "equipped" if on else ""))
+        out.append("")
+    plaques = purse["plaques"]
+    if plaques:
+        out.append(f" ⚜ PLAQUES ({len(plaques)})")
+        for p in plaques:
+            out.append(spread(f"   {'◆' if p.get('shown', True) else '◇'} p{p['id']}".ljust(12)
+                              + fit(p["title"], WIDTH - 30),
+                              "on display" if p.get("shown", True) else "in storage"))
+        out.append("")
+    if len(out) == 3:
+        out += ["   Only the clothes on your back. `/quests shop` has wares.", ""]
+    out.append(rule("/quests equip <item> · /quests unequip <item>", "", top=False))
+    return "\n".join(out)
+
+
+def render_trophies() -> str:
+    plaques = wallet()["plaques"]
+    shown = [p for p in plaques if p.get("shown", True)]
+    out = [rule(f"{look('trophy')} HALL OF TROPHIES", f"{len(shown)} on display"), ""]
+    inner = WIDTH - 10
+    for p in shown:
+        body = [f"✦ {fit(p['title'], inner - 4)}", f"  {p.get('project', '')} · {p.get('date', '')} · p{p['id']}"]
+        body += ["  " + line for line in wrap(p.get("outcome") or "", inner - 4)[:2]]
+        out.append("    ┌" + "─" * inner + "┐")
+        out += ["    │ " + line + " " * (inner - 1 - cells(line)) + "│" for line in body]
+        out.append("    └" + "─" * inner + "┘")
+    if not plaques:
+        out.append(f"   The walls are bare. Turn in a quest, then /quests engrave <n> ({PLAQUE_PRICE} {GOLD}).")
+    elif len(plaques) > len(shown):
+        out.append(f"   + {len(plaques) - len(shown)} in storage · /quests inventory")
+    out.append("")
+    out.append(" 💡 /quests done lists this session's finished quests, to engrave")
+    out.append(rule(f"/quests engrave <n> · /quests unequip p<n> stores one", "", top=False))
+    return "\n".join(out)
+
+
+def find_plaque(ref: str) -> "dict | None":
+    match = re.fullmatch(r"p(\d+)", ref)
+    return next((p for p in wallet()["plaques"] if match and p["id"] == int(match.group(1))), None)
+
+
+def cmd_buy(item: str) -> str:
+    item = item.lower()
+    if item in ("engrave", "plaque"):
+        return f"Plaques are engraved, not bought off the shelf: /quests engrave <quest> ({PLAQUE_PRICE} {GOLD})."
+    spec = SHOP.get(item)
+    if not spec:
+        return f"No '{item}' in the shop. `/quests shop` lists the wares."
+    if owns(item):
+        return f"You already own the {spec['name']}. `/quests equip {item}` puts it on."
+    purse = wallet()
+    if purse["gold"] < spec["price"]:
+        return f"Not enough gold: the {spec['name']} costs {spec['price']} {GOLD} and you have {purse['gold']}."
+    purse["gold"] -= spec["price"]
+    purse["owned"].append(item)
+    purse["equipped"][spec["slot"]] = item
+    save_wallet(purse)
+    note = " Give it words with `/quests banner <text>`." if item == "custom" and not purse.get("banner_text") else ""
+    return f"Bought the {spec['name']} for {spec['price']} {GOLD} and equipped it. {purse['gold']} {GOLD} left.{note}"
+
+
+def cmd_equip(item: str) -> str:
+    item = item.lower()
+    plaque = find_plaque(item)
+    if plaque:
+        plaque["shown"] = True
+        save_wallet(wallet())
+        return f"Equipped p{plaque['id']}: it's on display in /quests trophies."
+    spec = SHOP.get(item)
+    if not spec:
+        return f"No '{item}' to equip. `/quests inventory` lists what you own."
+    if not owns(item):
+        return f"You don't own the {spec['name']} yet: {spec['price']} {GOLD} at /quests shop."
+    purse = wallet()
+    purse["equipped"][spec["slot"]] = item
+    save_wallet(purse)
+    return f"Equipped the {spec['name']}."
+
+
+def cmd_unequip(item: str) -> str:
+    item = item.lower()
+    plaque = find_plaque(item)
+    if plaque:
+        plaque["shown"] = False
+        save_wallet(wallet())
+        return f"Unequipped p{plaque['id']}: it's in storage, off the hall's walls."
+    slot = item if item in SLOTS else SHOP.get(item, {}).get("slot")
+    if not slot:
+        return f"No '{item}' to unequip. `/quests inventory` lists what you own."
+    current = equipped(slot)
+    if item in SHOP and current != item:
+        return f"The {SHOP[item]['name']} isn't equipped."
+    if current == SLOTS[slot]:
+        if not current:
+            return "No banner to take off."
+        return f"The {SHOP[current]['name']} is the one you started with; equip another instead."
+    purse = wallet()
+    purse["equipped"][slot] = SLOTS[slot]
+    save_wallet(purse)
+    back = f"back to the {SHOP[SLOTS[slot]]['name']}" if SLOTS[slot] else "no banner"
+    return f"Unequipped the {SHOP[current]['name']}; {back}."
+
+
+def cmd_banner(text: str) -> str:
+    if not owns("custom"):
+        return f"Your own banner needs the custom banner: {SHOP['custom']['price']} {GOLD}, `/quests buy custom`."
+    purse = wallet()
+    purse["banner_text"] = fit(text.strip().strip('"'), BANNER_CELLS)
+    purse["equipped"]["banner"] = "custom"
+    save_wallet(purse)
+    return f"Banner set: ⚔ {purse['banner_text']}"
+
+
+def cmd_engrave(state: dict, ident: str) -> str:
+    quest = find_quest(state, ident)
+    if not quest or quest["status"] != "done":
+        return f"No quest #{ident} turned in this session to engrave."
+    purse = wallet()
+    if any(p.get("session") == state["session_id"] and p.get("quest") == quest["id"] for p in purse["plaques"]):
+        return f"#{quest['id']} is already hanging in the hall."
+    if purse["gold"] < PLAQUE_PRICE:
+        return f"Not enough gold: a plaque costs {PLAQUE_PRICE} {GOLD} and you have {purse['gold']}."
+    pid = max([p["id"] for p in purse["plaques"]] + [0]) + 1
+    purse["gold"] -= PLAQUE_PRICE
+    purse["plaques"].append({
+        "id": pid, "title": quest["title"], "outcome": quest.get("outcome"),
+        "project": Path(state.get("project") or project_root()).name,
+        "date": (quest.get("done_at") or now())[:10],
+        "session": state["session_id"], "quest": quest["id"], "shown": True,
+    })
+    save_wallet(purse)
+    return f"Engraved #{quest['id']} as plaque p{pid} for {PLAQUE_PRICE} {GOLD}; it's up in /quests trophies."
 
 
 def main_repo_slug(root: str) -> str:
@@ -1412,6 +1839,19 @@ SHARE
                         decided, what came of it. For a PR description or a
                         handoff.
 
+GOLD, XP AND THE SHOP
+  Each objective Claude checks off pays 1 💰 and 10 xp; each quest turned in
+  pays 2 💰 and 20 xp. Both follow you across sessions and repos. XP sets your
+  rank: Apprentice, Journeyman (301), Artificer (1001), Archmage (2001).
+  /quests shop          Trinkets and Tronkets: frames, bars, trophies, banners.
+  /quests buy double    Buy an item once; it's equipped straight away.
+  /quests inventory     What you own, what's equipped, and your plaques.
+  /quests equip heavy   Put on something you own. `unequip <item|slot>`
+                        goes back to how you started.
+  /quests engrave 3     Hang turned-in quest #3 in the hall as a plaque.
+  /quests trophies      The hall. `unequip p2` puts a plaque in storage.
+  /quests banner <text> Your own words in the header (the custom banner).
+
 SETTINGS
   /quests config        Every setting, its value, and what it controls.
   /quests config <k> <v>
@@ -1431,7 +1871,8 @@ WHAT CLAUDE LOGS
 
 FILES
   {here}/
-  {store_base()}/<project>/<session>.json"""
+  {store_base()}/<project>/<session>.json
+  {wallet_path()}"""
 
 
 def cmd_config(key: "str | None" = None, raw: "str | None" = None) -> str:
@@ -1473,6 +1914,14 @@ USER_COMMANDS = re.compile(
       | status\ ?line (?: \s+ (?P<sl_mode>on|off) )? (?P<sl>)
       | (?P<done>done|completed|finished)
       | (?P<config>config) (?: \s+ (?P<cfg_key>\w+) (?: \s+ (?P<cfg_val>\S+) )? )?
+      | (?P<shop>shop|store)
+      | buy \s+ (?P<buy>\S+)
+      | (?P<inventory>inventory|inv|bag)
+      | equip \s+ (?P<equip>\S+)
+      | unequip \s+ (?P<unequip>\S+)
+      | (?P<trophies>trophies|hall)
+      | engrave \s+ \#?(?P<engrave>\d+)
+      | banner \s+ (?P<banner>.+)
       | (?P<help>help)
     )$""",
     re.IGNORECASE | re.VERBOSE,
@@ -1514,6 +1963,22 @@ def dispatch(raw: str) -> str:
             return cmd_statusline_install((g["sl_mode"] or "on").lower() == "on")
         elif g["live"]:
             return launch_live(sid, root)
+        elif g["shop"]:
+            return render_shop()
+        elif g["buy"]:
+            return cmd_buy(g["buy"])
+        elif g["inventory"]:
+            return render_inventory()
+        elif g["equip"]:
+            return cmd_equip(g["equip"])
+        elif g["unequip"]:
+            return cmd_unequip(g["unequip"])
+        elif g["trophies"]:
+            return render_trophies()
+        elif g["engrave"]:
+            return cmd_engrave(state, g["engrave"])
+        elif g["banner"]:
+            return cmd_banner(g["banner"])
         elif g["config"]:
             if g["cfg_key"] and g["cfg_key"].lower() not in SETTINGS:
                 return f"No setting {g['cfg_key']!r}. Settings: {', '.join(SETTINGS)}."
@@ -1759,7 +2224,7 @@ def summarize_toasts(toasts: list) -> str:
             created.add(qid)
             parts.append([kind, qid, f'✨ #{qid} created "{clip(t.get("title") or "", 30)}"'])
         elif kind in ("await", "turn_in", "abandon", "adopt"):
-            label = {"await": "⏸ #{} awaiting you", "turn_in": "🏆 #{} complete",
+            label = {"await": "⏸ #{} awaiting you", "turn_in": look("trophy") + " #{} complete",
                      "abandon": "🚫 #{} abandoned", "adopt": "📜 #{} resumed"}[kind]
             parts.append([kind, qid, label.format(qid)])
         else:

@@ -635,6 +635,195 @@ class TodoHandoff(QuestTest):
                     os.environ[k] = v
 
 
+class Gold(QuestTest):
+    def gold(self):
+        path = self.tmp / "quests" / "wallet.json"
+        return json.loads(path.read_text())["gold"] if path.exists() else 0
+
+    def test_objectives_pay_one_quests_pay_two_once(self):
+        self.start()
+        self.q("check", "1.1")
+        self.q("check", "1.1")                      # re-checking pays nothing
+        self.q("fail", "1.2")                       # failures pay nothing
+        self.assertEqual(self.gold(), 1)
+        self.q("turn-in", "1", "--outcome", "done")
+        self.assertEqual(self.gold(), 3)
+        self.prompt("one more thing")
+        self.q("link", "1", "2", "extend it")       # reopened...
+        self.q("turn-in", "1", "--outcome", "done again")
+        self.assertEqual(self.gold(), 3)            # ...but a quest pays once
+        self.q("accept", "--title", "Dropped", "--objective", "o")
+        self.q("abandon", "2", "--reason", "no")
+        self.assertEqual(self.gold(), 3)
+
+    def test_purse_is_shared_across_sessions_and_repos(self):
+        self.start()
+        self.q("check", "1.1")
+        other = self.tmp / "other"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(other), check=True)
+        env = dict(self.env, CLAUDE_CODE_SESSION_ID="sess-bbbb2222")
+        run([sys.executable, str(QUEST), "accept", "--title", "Elsewhere", "--objective", "o"],
+            str(other), env)
+        run([sys.executable, str(QUEST), "check", "1.1"], str(other), env)
+        self.assertEqual(self.gold(), 2)
+
+    def test_gold_sits_bottom_right_of_the_frame(self):
+        self.start()
+        self.q("check", "1.1", "1.2")
+        self.q("turn-in", "1")
+        lines = self.quests().splitlines()
+        bottom = next(l for l in lines if l.startswith("╰"))
+        self.assertTrue(bottom.endswith(" 4 💰 ─╯"), bottom)
+        mod = SessionStart.module(self)
+        self.assertEqual(mod.cells(bottom), mod.WIDTH)
+
+    def test_empty_purse_reads_zero(self):
+        self.assertIn(" 0 💰 ─╯", self.quests())
+
+
+class Shop(QuestTest):
+    def purse(self):
+        return json.loads((self.tmp / "quests" / "wallet.json").read_text())
+
+    def fund(self, gold, **extra):
+        path = self.tmp / "quests" / "wallet.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict({"gold": gold, "xp": 0}, **extra)))
+
+    def frame(self, out):
+        mod = SessionStart.module(self)
+        lines = out.splitlines()
+        return [l for l in lines if l and l[0] in "╭╰╔╚┏┗+"], mod
+
+    def test_xp_and_rank_bar_in_the_log(self):
+        self.start()
+        self.q("check", "1.1", "1.2")
+        self.q("turn-in", "1")
+        self.assertEqual(self.purse()["xp"], 40)
+        lines = self.quests().splitlines()
+        self.assertTrue(lines[1].startswith(" 🏅 APPRENTICE · 40 xp"), lines[1])
+        self.assertTrue(lines[1].endswith("▰▱▱▱▱▱▱▱ 261 to Journeyman"), lines[1])
+        self.assertEqual(SessionStart.module(self).cells(lines[1]), SessionStart.module(self).WIDTH)
+
+    def test_rank_up_is_toasted_and_top_rank_is_max(self):
+        self.fund(0, xp=295)
+        self.start()
+        self.q("check", "1.1")
+        self.assertIn("🏅 Rank up: Journeyman", json.dumps(self.state()["toasts"], ensure_ascii=False))
+        self.fund(0, xp=5000)
+        self.assertIn("ARCHMAGE · 5000 xp", self.quests())
+        self.assertIn("▰▰▰▰▰▰▰▰ max rank", self.quests())
+
+    def test_old_purse_gets_xp_for_its_gold(self):
+        path = self.tmp / "quests" / "wallet.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"gold": 6}')
+        self.assertIn("APPRENTICE · 60 xp", self.quests())
+
+    def test_buy_once_equips_and_charges(self):
+        self.fund(12)
+        self.assertIn("Not enough gold: the Gem trophy costs 25", self.quests("buy gem"))
+        self.assertIn("Bought the Double frame for 10 💰 and equipped it. 2 💰 left.", self.quests("buy double"))
+        self.assertIn("You already own the Double frame", self.quests("buy double"))
+        self.assertIn("No 'nope' in the shop", self.quests("buy nope"))
+        self.assertEqual(self.purse()["gold"], 2)
+        self.assertEqual(self.purse()["owned"], ["double"])
+        frame, mod = self.frame(self.quests())
+        self.assertEqual([l[:2] for l in frame], ["╔═", "╚═"])
+        self.assertEqual([mod.cells(l) for l in frame], [mod.WIDTH, mod.WIDTH])
+
+    def test_equip_and_unequip_switch_between_owned_skins(self):
+        self.fund(0, owned=["double", "heavy", "beads", "crown"])
+        self.assertIn("You don't own the ASCII frame yet: 5 💰", self.quests("equip ascii"))
+        self.assertEqual(self.quests("equip heavy"), "Equipped the Heavy frame.")
+        self.assertTrue(self.quests().startswith("┏━ 📜 QUEST LOG"))
+        self.assertIn("isn't equipped", self.quests("unequip double"))
+        self.assertIn("back to the Rounded frame", self.quests("unequip frame"))
+        self.assertTrue(self.quests().startswith("╭─ 📜 QUEST LOG"))
+        self.assertIn("the one you started with", self.quests("unequip rounded"))
+        self.quests("equip beads")
+        self.quests("equip crown")
+        self.start()
+        self.q("check", "1.1")
+        self.q("turn-in", "1")
+        log = self.quests()
+        self.assertIn("●○○○○○○○ 271 to Journeyman", log)
+        self.assertIn(" 👑 COMPLETED (1)", log)
+        inv = self.quests("inventory")
+        self.assertIn("◆ beads", inv)
+        self.assertIn("◇ classic", inv)
+        self.assertIn("◆ rounded", inv)
+
+    def test_banners(self):
+        self.fund(40)
+        self.assertIn("needs the custom banner", self.quests("banner Hello"))
+        self.quests("buy refactorer")
+        self.assertIn("📜 QUEST LOG · ⚔ the Refactorer", self.quests())
+        self.assertIn("Give it words", self.quests("buy custom"))
+        self.assertEqual(self.quests('banner "Ship It"'), "Banner set: ⚔ Ship It")
+        self.assertIn("📜 QUEST LOG · ⚔ Ship It", self.quests())
+        self.quests("unequip banner")
+        self.assertNotIn("⚔ Ship It", self.quests())
+        self.assertEqual(self.quests("unequip banner"), "No banner to take off.")
+
+    def test_engrave_hangs_a_plaque_once(self):
+        self.start()
+        self.assertIn("No quest #1 turned in", self.quests("engrave 1"))
+        self.q("check", "1.1", "1.2")
+        self.q("turn-in", "1", "--outcome", "It shipped")
+        self.assertIn("The walls are bare", self.quests("trophies"))
+        self.assertIn(" 💡 /quests done lists this session's finished quests", self.quests("trophies"))
+        self.assertIn("Engraved #1 as plaque p1 for 3 💰", self.quests("engrave 1"))
+        self.assertIn("already hanging", self.quests("engrave 1"))
+        self.assertEqual(self.purse()["gold"], 1)
+        hall = self.quests("trophies")
+        self.assertIn("✦ Build the thing", hall)
+        self.assertIn("It shipped", hall)
+        self.assertIn("1 on display", hall)
+        self.assertIn("in storage", self.quests("unequip p1"))
+        self.assertIn("+ 1 in storage", self.quests("trophies"))
+        self.assertIn("on display", self.quests("equip p1"))
+
+    def test_shop_rows_fit_the_frame(self):
+        self.fund(10, owned=["beads"], equipped={"bar": "beads"})
+        shop = self.quests("shop")
+        self.assertIn("TRINKETS AND TRONKETS 🏆", shop)
+        self.assertIn("purse 10 💰", shop)
+        self.assertIn("◆ equipped", shop)
+        mod = SessionStart.module(self)
+        rows = [l for l in shop.splitlines() if l.startswith("   ") and ("💰" in l or "equipped" in l)]
+        self.assertEqual(len(rows), 13)  # 12 wares for sale and the plaque
+        self.assertEqual({mod.cells(l) for l in rows}, {mod.WIDTH})
+
+    def test_claude_cannot_shop(self):
+        self.fund(50)
+        out = subprocess.run([sys.executable, str(QUEST), "buy", "gem"], cwd=str(self.repo), env=self.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(self.purse()["gold"], 50)
+
+
+class Tips(QuestTest):
+    def tip(self, out):
+        return next((l for l in out.splitlines() if l.startswith(" 💡 ")), None)
+
+    def test_tips_follow_what_applies(self):
+        self.assertIsNone(self.tip(self.quests()))
+        self.q("rumor", "someday")
+        self.assertEqual(self.tip(self.quests()), " 💡 /quests todo r<n>")
+        self.start()
+        self.assertEqual(self.tip(self.quests()),
+                         " 💡 /quests track <n> · abandon <n> [reason] · todo <n>|<n.m>|r<n>")
+        other = self.quests(CLAUDE_CODE_SESSION_ID="sess-bbbb2222")
+        self.assertEqual(self.tip(other), " 💡 /quests adopt")
+        self.assertIn("Also: /quests track <n>", self.quests(CLAUDE_QUESTS_STYLE="plain"))
+
+    def test_short_argument_hint(self):
+        skill = (PLUGIN / "skills" / "quests" / "SKILL.md").read_text()
+        self.assertIn('argument-hint: "[n] | done | shop | inventory | chronicle | live | config | help"', skill)
+
+
 class Wrapper(QuestTest):
     def test_bin_quest_runs_the_cli(self):
         self.prompt("x")

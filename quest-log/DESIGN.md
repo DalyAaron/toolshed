@@ -244,6 +244,34 @@ the terminal, for a PR description or a handoff, and the rpg vocabulary would
 only get in the way of whoever reads it next. SKILL.md has Claude relay it as
 rendered markdown rather than in a code block.
 
+## Gold, XP and the shop
+
+A purse in `wallet.json`, beside `config.json` in the store root, so it
+belongs to the Claude profile (`CLAUDE_CONFIG_DIR`) rather than a session or a
+repo. An objective pays 1 gold and 10 xp the first time it's checked, a quest
+2 gold and 20 xp the first time it's turned in; each is marked `paid` so
+re-checking, reopening and turning in again, or adopting into another session
+can't pay twice. Failed objectives and abandoned quests pay nothing. Crossing
+a rank is a toast like any other log change.
+
+Gold is spent; XP isn't, so buying never costs a rank. A purse from before XP
+existed is credited 10 xp per gold, since nothing had been spent from it yet.
+
+Claude decides what an objective is, so Claude controls how much comes in.
+That's why everything for sale is cosmetic: splitting work into more
+objectives buys a nicer frame, never a change in how Claude works or what it
+spends. The shop commands are the user's alone and SKILL.md says so.
+
+Items are bought once into `owned`, and `equipped` holds one per slot (frame,
+bar, trophy, banner). The price-0 items are what everyone starts with and
+what unequipping returns to. The renderer reads the look through `look()`,
+so a skin reaches the log, the live view and the toasts the same way. The
+purse is cached on its mtime so the live view picks up a purchase without a
+restart. Plaques are the one thing bought more than once: each is a copy of a
+turned-in quest (title, outcome, repo, date), since its session file may be
+long gone when the hall is next opened. Skins apply to the rpg style only;
+`style plain` stays plain.
+
 ## /todo handoff
 
 Anything in the log can go to `/todo` (`to-todo 3`, `3.2`, `r1`), but only when
