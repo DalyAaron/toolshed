@@ -1,0 +1,20 @@
+{
+  "name": "quest-log",
+  "displayName": "/quests",
+  "version": "0.1.0",
+  "description": "Claude keeps a quest log of what you asked and where it's up to: the ask, why it matters, objectives checked off as they land, decisions, and what's waiting on you.",
+  "author": {
+    "name": "Aaron Daly"
+  },
+  "homepage": "https://github.com/DalyAaron/toolshed/tree/main/quest-log",
+  "license": "MIT",
+  "keywords": [
+    "quests",
+    "progress",
+    "tracking",
+    "workflow",
+    "status"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}
