@@ -77,6 +77,19 @@ The store is plain data. `style: rpg | plain` switches the vocabulary and glyphs
 in `/quests` and the toasts, and nothing else. Claude never writes flavor text:
 it would cost tokens on every call and blur facts the user relies on.
 
+In `rpg` style `/quests` is laid out like a game's quest log: a 76-column
+frame (it fits an 80-column terminal), sections for awaiting you, active,
+rumors and completed, and a progress bar right-aligned on each quest's row.
+Found in a real session with ten quests, where the flat layout listed every
+awaiting quest twice, expanded every quest, and repeated one ask's quote on
+five quests created from the same prompt. So now: a question waiting on the
+user is shown once, as a quote under its quest; only the tracked quest is
+expanded; the quoted ask lives in the full entry, not the log; and completed
+quests show the latest three with their outcomes, the rest counted
+(`/quests done` lists them all). Alignment counts wide characters as two
+columns (`cells`); a terminal that draws an emoji at the wrong width will
+shift that row's bar, nothing worse. `plain` keeps the flat layout.
+
 The flavor still costs something, because Claude relays the rendered log into
 the conversation. So while `style` is at its default, the log's footer carries a
 one-line tip that `plain` saves tokens. It disappears once the user sets `style`

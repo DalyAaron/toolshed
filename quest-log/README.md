@@ -8,26 +8,28 @@ decisions Claude made along the way; and anything it's waiting on you for.
 Step away, come back, type `/quests`, and you know where things stand.
 
 ```
-📜 QUEST LOG — toolshed · turn 14
+╭─ 📜 QUEST LOG ────────────────────────────────────── toolshed · turn 14 ─╮
 
-⏸ AWAITING YOU (1)
-  #3 Rename CLI verb — "turn-in" or "complete"?
+ ❓ AWAITING YOU
+   #3  Rename CLI verb                                          ▱▱▱▱▱▱▱▱ 0/1
+       “"turn-in" or "complete"?”
 
-MAIN QUEST
-▶ #1 Ship quest-log plugin  [3/5]
-    "plan out the implementation of quest-log…" — you, turn 1
-    ✔ 1. Study /todo conventions
-    ✔ 2. Draft store + CLI
-    ▸ 3. Implement hooks   ◀ tracking
-    ○ 4. Write SKILL.md
-    ○ 5. Marketplace + README
-    Reward: /quests renders; hook smoke test passes
+ ⚔ ACTIVE
+ ▶ #1  Ship quest-log plugin                                    ▰▰▰▱▱▱▱▱ 2/5
+       ✔ 1. Study /todo conventions
+       ✔ 2. Draft store + CLI
+       ▸ 3. Implement hooks
+       ○ 4. Write SKILL.md
+       ○ 5. Marketplace + README
+       🎁 /quests renders; hook smoke test passes
 
-RUMORS  (noticed, not acted on)
-  r1 todo.py adopt path swallows errors silently
+ 👂 RUMORS
+   r1  todo.py adopt path swallows errors silently
 
-FINISHED
-  ✔ #2 Fix README typo (+1 later ask) — fixed 3 typos; also checked CHANGELOG
+ 🏆 COMPLETED (1)
+   ✔ #2 Fix README typo — fixed 3 typos; also checked CHANGELOG
+
+╰─ /quests 1 full entry · /quests help ────────────────────────────────────╯
 ```
 
 At the end of each turn, one line in your terminal sums up what changed in
@@ -51,14 +53,16 @@ From a trial run. While making a small stack module, Claude noticed
 It noted it as a rumor instead:
 
 ```
-📜 QUEST LOG — qtrial · turn 5
+╭─ 📜 QUEST LOG ───────────────────────────────────────── qtrial · turn 5 ─╮
 
-RUMORS  (noticed, not acted on)
-  r1 __pycache__/ is untracked; a .gitignore would keep it out of commits
+ 👂 RUMORS
+   r1  __pycache__/ is untracked; a .gitignore would keep it out of commits
 
-FINISHED
-  ✔ #1 Stack module with tests (+2 later asks) — pop returns None on empty; 6/6 tests pass; committed; docstrings chec…
-  ✔ #2 Add size to Stack (+1 later ask) — size() added returning len(self); 7/7 tests pass; uncommitted
+ 🏆 COMPLETED (2)
+   ✔ #2 Add size to Stack (+1 later ask) — size() added returning len(self)…
+   ✔ #1 Stack module with tests (+2 later asks) — pop returns None on empty…
+
+╰─ /quests help ───────────────────────────────────────────────────────────╯
 ```
 
 Tell Claude "move rumors to todo" (or run `/quests todo r1`) and it goes to
@@ -82,10 +86,10 @@ When you pick it up with `/todo next`, it comes back as a quest. Claude does
 the work, the todo is marked done, and the log shows how it ended:
 
 ```
-FINISHED
-  ✔ #1 Stack module with tests (+2 later asks) — pop returns None on empty; 6/6 tests pass; committed; docstrings chec…
-  ✔ #2 Add size to Stack (+1 later ask) — size() added returning len(self); 7/7 tests pass; uncommitted
-  ✔ #3 Ignore __pycache__ — .gitignore added with __pycache__/; no longer untracked; uncommitted
+ 🏆 COMPLETED (3)
+   ✔ #3 Ignore __pycache__ — .gitignore added with __pycache__/; no longer…
+   ✔ #2 Add size to Stack (+1 later ask) — size() added returning len(self)…
+   ✔ #1 Stack module with tests (+2 later asks) — pop returns None on empty…
 ```
 
 `/quests 3` traces it the whole way back: *Began as rumor r1 (turn 4), then
@@ -123,6 +127,7 @@ of a log that keeps itself. Either:
 | Command | What it does |
 | :--- | :--- |
 | `/quests` | The log. |
+| `/quests done` | Every completed quest; the log shows the latest three. |
 | `/quests 3` | Quest #3 in full: every ask, why, objectives, journal, outcome, loot. |
 | `/quests track 3` | Point Claude at #3 next. |
 | `/quests abandon 3 [reason]` | Drop it. |
@@ -224,6 +229,10 @@ open.
 ### Unreleased
 
 - **`/quests live`**: the log in a pane beside Claude, redrawn as it works.
+- **A proper quest log.** A frame, progress bars, and sections: awaiting you,
+  active, rumors, completed. A question waiting on you is shown once, only the
+  tracked quest is expanded, and completed quests show the latest three with
+  their outcomes (`/quests done` for all of them). `style plain` is unchanged.
 
 ### 1.0.0
 

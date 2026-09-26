@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 SETTINGS: "dict[str, tuple[object, tuple, str]]" = {
@@ -414,7 +415,164 @@ def quest_block(state: dict, quest: dict, g: dict) -> "list[str]":
     return lines
 
 
-def render_log(state: dict) -> str:
+# ------------------------------------------------------------ rpg quest log
+
+WIDTH = 76      # the frame; fits an 80-column terminal
+BAR = 8         # progress bar cells
+RECENT_DONE = 3  # completed quests shown with their outcome; the rest are counted
+
+
+def cells(text: str) -> int:
+    """Terminal columns `text` takes: wide characters (most emoji) count two."""
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch) or ch == "\ufe0f":
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def fit(text: str, width: int) -> str:
+    """Clip to `width` columns, with an ellipsis when anything was cut."""
+    text = one_line(text)
+    if cells(text) <= width:
+        return text
+    out = ""
+    for ch in text:
+        if cells(out + ch) > width - 1:
+            break
+        out += ch
+    return out.rstrip() + "…"
+
+
+def wrap(text: str, width: int) -> "list[str]":
+    lines, line = [], ""
+    for word in one_line(text).split(" "):
+        if line and cells(line) + 1 + cells(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}" if line else word
+    return lines + ([line] if line else [])
+
+
+def bar(quest: dict) -> str:
+    done, total = progress(quest)
+    if not total:
+        return ""
+    filled = round(BAR * done / total)
+    return "▰" * filled + "▱" * (BAR - filled) + f" {done}/{total}"
+
+
+def rule(left: str, right: str, corner_l: str, corner_r: str) -> str:
+    """`╭─ left ──────── right ─╮`, exactly WIDTH columns."""
+    left, right = f"{corner_l}─ {left} ", f" {right} ─{corner_r}" if right else f"─{corner_r}"
+    return left + "─" * max(2, WIDTH - cells(left) - cells(right)) + right
+
+
+def quest_row(quest: dict, lead: str) -> str:
+    """`lead#id  title .......... ▰▰▱▱ 1/2`, the bar right-aligned in the frame."""
+    ident = f"#{quest['id']}".ljust(3)
+    progress_text = bar(quest)
+    room = WIDTH - cells(lead) - len(ident) - 1 - (cells(progress_text) + 1 if progress_text else 0)
+    title = fit(quest["title"], room)
+    row = f"{lead}{ident} {title}"
+    if progress_text:
+        row += " " * (WIDTH - cells(row) - cells(progress_text)) + progress_text
+    return row
+
+
+def expanded(state: dict, quest: dict) -> "list[str]":
+    """The tracked quest's objectives and reward, under its row."""
+    lines = []
+    cur = current_objective(quest)
+    for n, obj in enumerate(quest["objectives"], 1):
+        if obj["state"] == "open":
+            mark = "▸" if cur and cur[0] == n else "○"
+        else:
+            mark = {"done": "✔", "failed": "✗", "parked": "→"}[obj["state"]]
+        text = f"{n}. {obj['text']}"
+        if obj["state"] == "parked" and obj.get("todo"):
+            text += f"  (/todo #{obj['todo']})"
+        lines.append(f"       {mark} " + fit(text, WIDTH - 9))
+    if quest.get("reward"):
+        lines.append("       🎁 " + fit(quest["reward"], WIDTH - 10))
+    return lines
+
+
+def closed_row(quest: dict) -> str:
+    later = len(quest.get("inherited_asks") or []) + len(quest["asks"]) - 1
+    title = fit(quest["title"], 30) + (f" (+{later} later ask{'s' * (later > 1)})" if later > 0 else "")
+    if quest["status"] == "done":
+        mark, tail = "✔", quest.get("outcome") or "turned in"
+    elif quest["status"] == "parked":
+        mark, tail = "→", f"sent to /todo #{quest.get('todo')}"
+    elif quest["status"] == "adopted":
+        mark, tail = "→", "continued in another session"
+    else:
+        mark, tail = "✗", "abandoned" + (": " + quest["outcome"][11:] if (quest.get("outcome") or "").startswith("Abandoned: ") else "")
+    row = f"   {mark} #{quest['id']} {title}"
+    room = WIDTH - cells(row) - 3
+    return row + (" — " + fit(tail, room) if room >= 12 else "")
+
+
+def render_rpg(state: dict, live: "str | None" = None, all_done: bool = False) -> str:
+    quests = state["quests"]
+    tracked = state.get("tracked")
+    rumors = [r for r in state["rumors"] if not r.get("quest") and not r.get("todo")]
+    project = Path(state.get("project") or project_root()).name
+    out = [rule("📜 QUEST LOG", f"{project} · turn {state.get('turn', 0)}", "╭", "╮"), ""]
+
+    waiting = [q for q in quests if q["status"] == "awaiting"]
+    active = sorted((q for q in quests if q["status"] == "active"),
+                    key=lambda q: (q["id"] != tracked, q["kind"] != "main", q["id"]))
+    closed = sorted((q for q in quests if not is_open(q)),
+                    key=lambda q: (q.get("done_at") or "", q["id"]), reverse=True)
+
+    if not quests and not rumors:
+        out.append("   Nothing logged yet this session.")
+    if waiting:
+        out.append(" ❓ AWAITING YOU")
+        for quest in waiting:
+            out.append(quest_row(quest, " ▶ " if quest["id"] == tracked else "   "))
+            question = wrap(quest["awaiting"] or "", WIDTH - 9)
+            for i, line in enumerate(question):
+                out.append("       " + ("“" if i == 0 else " ") + line + ("”" if i == len(question) - 1 else ""))
+            if quest["id"] == tracked:
+                out += expanded(state, quest)
+        out.append("")
+    if active:
+        out.append(" ⚔ ACTIVE")
+        for quest in active:
+            out.append(quest_row(quest, " ▶ " if quest["id"] == tracked else "   "))
+            if quest["id"] == tracked:
+                out += expanded(state, quest)
+        out.append("")
+    if rumors:
+        out.append(" 👂 RUMORS")
+        out += [f"   r{r['id']}  " + fit(r["text"], WIDTH - 6 - len(str(r["id"]))) for r in rumors]
+        out.append("")
+    if closed:
+        out.append(f" 🏆 COMPLETED ({len(closed)})")
+        shown = closed if all_done else closed[:RECENT_DONE]
+        out += [closed_row(q) for q in shown]
+        if len(closed) > len(shown):
+            out.append(f"     + {len(closed) - len(shown)} more · /quests done lists them all")
+        out.append("")
+
+    if live:
+        out.append(rule(live, "", "╰", "╯"))
+    else:
+        focus = f"/quests {tracked} full entry · " if tracked else ""
+        out.append(rule(focus + "/quests help", "", "╰", "╯"))
+        if cfg_sources()["style"] == "default":
+            out.append("tip: `/quests config style plain` drops the flavor and saves tokens")
+    return "\n".join(out)
+
+
+def render_log(state: dict, live: "str | None" = None, all_done: bool = False) -> str:
+    if cfg()["style"] == "rpg":
+        return render_rpg(state, live, all_done)
     g = glyphs()
     quests = state["quests"]
     rumors = [r for r in state["rumors"] if not r.get("quest") and not r.get("todo")]
@@ -458,9 +616,10 @@ def render_log(state: dict) -> str:
             else:
                 out.append(f"  {g['failed']} #{quest['id']} {title} — {g['abandoned']}")
 
-    out += ["", "`/quests <n>` shows a full entry · `/quests help` for everything else"]
-    if cfg()["style"] == "rpg" and cfg_sources()["style"] == "default":
-        out.append("tip: `/quests config style plain` drops the flavor and saves tokens")
+    if live:
+        out += ["", live]
+    else:
+        out += ["", "`/quests <n>` shows a full entry · `/quests help` for everything else"]
     return "\n".join(out)
 
 
@@ -1060,15 +1219,13 @@ def watch(sid: "str | None", once: bool = False) -> int:
             if stamp != seen:
                 seen = stamp
                 if stamp:
-                    body = render_log(load(path, path.stem, root))
-                    foot = f"live · session {path.stem[:8]} · ctrl-c to close"
+                    body = render_log(load(path, path.stem, root),
+                                      live=f"live · session {path.stem[:8]} · ctrl-c to close")
                 else:
                     body = f"{glyphs()['head']} — {Path(root).name}\n\nNo log yet; waiting for Claude to start one."
-                    foot = "live · ctrl-c to close"
-                body = body.split("\n`/quests <n>`")[0]  # the footer's commands don't apply here
                 if not once:
                     sys.stdout.write("\033[H\033[2J")
-                sys.stdout.write(f"{body}\n\n{foot}\n")
+                sys.stdout.write(f"{body}\n")
                 sys.stdout.flush()
             if once:
                 return 0
@@ -1150,6 +1307,8 @@ WATCH
                         macOS opens a Terminal window. Always prints the
                         command, for a split you open yourself.
 
+  /quests done          Every completed quest, not just the latest three.
+
 SHARE
   /quests chronicle     The session told as markdown: what you asked, what was
                         decided, what came of it. For a PR description or a
@@ -1213,6 +1372,7 @@ USER_COMMANDS = re.compile(
       | (?P<adopt>adopt) (?: \s+ (?P<adopt_what>\d+|all) )?
       | (?P<chronicle>chronicle|story)
       | (?P<live>live|watch)
+      | (?P<done>done|completed|finished)
       | (?P<config>config) (?: \s+ (?P<cfg_key>\w+) (?: \s+ (?P<cfg_val>\S+) )? )?
       | (?P<help>help)
     )$""",
@@ -1249,6 +1409,8 @@ def dispatch(raw: str) -> str:
             result = cmd_adopt(state, g["adopt_what"])
         elif g["chronicle"]:
             return render_chronicle(state)
+        elif g["done"]:
+            result = render_log(state, all_done=True)
         elif g["live"]:
             return launch_live(sid, root)
         elif g["config"]:

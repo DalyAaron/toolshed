@@ -332,13 +332,50 @@ class UserCommands(QuestTest):
         self.assertIn("Nothing logged yet", self.quests())
         self.start()
         log = self.quests()
-        self.assertIn("▶ #1 Build the thing  [0/2]", log)
-        self.assertIn('"build the thing" — you, turn 1', log)
-        self.assertIn("▸ 1. first step   ◀ tracking", log)
+        self.assertTrue(log.startswith("╭─ 📜 QUEST LOG"))
+        self.assertIn(" ▶ #1  Build the thing", log)
+        self.assertIn("▱▱▱▱▱▱▱▱ 0/2", log)
+        self.assertIn("       ▸ 1. first step", log)
+        self.assertIn("       🎁 tests pass", log)
         self.assertTrue(self.quests("1").startswith("QUEST #1 — Build the thing"))
         self.assertEqual(self.quests("9"), "No quest #9.")
         self.assertTrue(self.quests("frobnicate").startswith("UNKNOWN:"))
         self.assertTrue(self.quests("help").startswith("HELP:"))
+
+    def test_rpg_layout(self):
+        self.start()
+        self.q("await", "1", "which colour?")
+        for n in range(2, 7):
+            self.q("accept", "--title", "Quest {}".format(n), "--kind", "side", "--objective", "x")
+        for n in (2, 3, 4, 5):
+            self.q("turn-in", str(n), "--outcome", "outcome {}".format(n))
+        self.q("track", "6")
+        self.q("check", "6.1")
+        self.q("objective", "1", "third step")  # a later objective; #1 stays awaiting
+        self.q("await", "1", "which colour?")
+        log = self.quests()
+        lines = log.splitlines()
+        self.assertEqual(log.count("Build the thing"), 1)          # awaiting quests shown once
+        self.assertIn('       “which colour?”', lines)
+        self.assertNotIn("first step", log)                        # only the tracked quest expands
+        self.assertIn(" ▶ #6  Quest 6", log)
+        self.assertIn(" 🏆 COMPLETED (4)", lines)
+        self.assertIn("   ✔ #5 Quest 5 — outcome 5", lines)
+        self.assertNotIn("#2 Quest 2", log)
+        self.assertIn("     + 1 more · /quests done lists them all", lines)
+        self.assertIn("   ✔ #2 Quest 2 — outcome 2", self.quests("done").splitlines())
+        mod = SessionStart.module(self)
+        frame = [l for l in lines if l and l[0] in "╭╰"]
+        self.assertEqual([mod.cells(l) for l in frame], [mod.WIDTH, mod.WIDTH])
+        rows = [l for l in lines if "▰" in l or "▱" in l]
+        self.assertEqual({mod.cells(l) for l in rows}, {mod.WIDTH})  # bars right-aligned
+
+    def test_long_titles_are_clipped_not_wrapped(self):
+        self.prompt("x")
+        self.q("accept", "--title", "A " * 60, "--objective", "o")
+        self.q("accept", "--title", "B", "--kind", "side")
+        row = [l for l in self.quests().splitlines() if l.startswith("   #1")][0]
+        self.assertIn("…", row)
 
     def test_plain_style(self):
         self.start()
@@ -376,7 +413,7 @@ class UserCommands(QuestTest):
         self.assertEqual(quest["inherited_asks"][0]["text"], "build the thing")
         self.assertEqual(self.state()["quests"][0]["status"], "adopted")
         self.assertIn("continued in another session", self.quests())
-        self.assertIn("earlier session", self.quests("", **other))
+        self.assertIn("asked, turn 1 of session sess-aaa", self.quests("1", **other))
         self.assertTrue(self.quests("1", **other).startswith("QUEST #1"))
         self.assertTrue(self.quests("adopt 1", **other).startswith("Nothing to adopt"))
 
@@ -440,7 +477,8 @@ class Live(QuestTest):
                  (2e9, 2e9))
         self.assertIn("live · session sess-bbb", self.q("watch", "--once"))
         pinned = self.q("watch", "--once", "--session", self.sid)
-        self.assertIn("▶ #1 Build the thing", pinned)
+        self.assertIn("▶ #1  Build the thing", pinned)
+        self.assertIn("╰─ live · session sess-aaa", pinned)
         self.assertNotIn("/quests help", pinned)
 
 

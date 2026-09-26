@@ -1,7 +1,7 @@
 ---
 name: quests
 description: Show the quest log Claude keeps of this session — what was asked, why, what's done, what's left, and what's waiting on the user.
-argument-hint: "[n] | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | live | config | help"
+argument-hint: "[n] | done | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | live | config | help"
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/quest.py *)
 ---
@@ -21,7 +21,7 @@ QUEST_EOF
 
 Match the first word of the output above.
 
-### `📜 QUEST LOG`, `Session log`, `QUEST #N` — the log, or one entry
+### `╭─ 📜 QUEST LOG`, `Session log`, `QUEST #N` — the log, or one entry
 
 Relay it **verbatim in a code block**. It is already laid out for a terminal:
 don't reflow it, summarise it, turn it into a table, or add commentary. The user
