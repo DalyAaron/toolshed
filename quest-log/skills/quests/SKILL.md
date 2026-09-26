@@ -1,7 +1,7 @@
 ---
 name: quests
 description: Show the quest log Claude keeps of this session — what was asked, why, what's done, what's left, and what's waiting on the user.
-argument-hint: "[n] | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | config | help"
+argument-hint: "[n] | track N | abandon N [reason] | todo N|N.M|rN | adopt [n|all] | chronicle | live | config | help"
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/quest.py *)
 ---
@@ -43,6 +43,11 @@ rendered, and copied into a PR description or a handoff as-is. No commentary.
 ### `Unfinished quests from other sessions` — the adopt list
 
 Relay it verbatim in a code block.
+
+### `LIVE:` — the log opened beside you
+
+Relay it as is, the command in a code block so it's easy to copy. Then carry
+on with anything you were doing; the pane needs nothing from you.
 
 ### `HELP:` / `CONFIG:` — reference
 

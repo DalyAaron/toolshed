@@ -191,6 +191,28 @@ session's environment. Plugins can only ship `agent` and `subagentStatusLine`
 in their `settings.json`, so the user has to wire it in; the README gives a
 command that picks the newest cached version, so it survives updates.
 
+## Live view
+
+`/quests` can only be read between turns, and `/btw` can't run it: it answers
+from the conversation, with no tools, so it would give Claude's recollection
+rather than the log. `quest.py watch` is the live view instead. It's read-only,
+polls the store twice a second, and redraws when the file changes. Given
+`--session` it follows that session; without, it follows whichever session in
+the project wrote last.
+
+`/quests live` launches it beside Claude from the skill's expansion, which runs
+in Claude Code's own environment, so the terminal's variables are visible. It
+tries, in order: `tmux split-window` ($TMUX), an iTerm2 split via AppleScript
+($TERM_PROGRAM), `wezterm cli split-pane`, `kitty @ launch` (needs remote
+control), and on macOS a new Terminal.app window. A launcher that fails falls
+through to the next. JetBrains and VS Code terminals can't be split from a
+command, which is why the Terminal window is the macOS fallback, and the
+command is always printed for a split the user opens by hand.
+
+The tests fake `tmux` and `osascript` on PATH. The Terminal.app script compiles
+with `osacompile`. The iTerm2 script follows iTerm's documented scripting form
+but hasn't run against iTerm2, which wasn't installed.
+
 ## Chronicle
 
 `/quests chronicle` renders the session as markdown: each quest with the user's
@@ -268,6 +290,7 @@ quest.py ack                          # "nothing to log"; clears the nudge
 quest.py show [q]                     # plain log for Claude, or one entry
 quest.py dispatch --stdin             # /quests, incl. adopt and chronicle
 quest.py statusline                   # status-line JSON on stdin
+quest.py watch [--session S] [--once] # live, read-only view of the log
 quest.py hook-{session-start,prompt,post-tool,stop}
 quest <verb> ...                      # bin/ wrapper, on Claude's Bash PATH
 

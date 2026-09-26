@@ -381,6 +381,69 @@ class UserCommands(QuestTest):
         self.assertTrue(self.quests("adopt 1", **other).startswith("Nothing to adopt"))
 
 
+class Live(QuestTest):
+    def fake_bin(self, name, status=0):
+        """A stand-in for tmux/osascript that records its arguments."""
+        bindir = self.tmp / "bin"
+        bindir.mkdir(exist_ok=True)
+        tool = bindir / name
+        tool.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$(dirname "$0")/{}.args"\nexit {}\n'.format(name, status))
+        tool.chmod(0o755)
+        return bindir
+
+    def live(self, **env):
+        bindir = self.fake_bin("tmux")
+        self.fake_bin("osascript")
+        e = dict(self.env, PATH=str(bindir) + os.pathsep + self.env["PATH"], **env)
+        for key in ("TMUX", "TERM_PROGRAM", "WEZTERM_PANE", "KITTY_WINDOW_ID"):
+            e.setdefault(key, "")
+        return run([sys.executable, str(QUEST), "dispatch", "--stdin"], str(self.repo), e, "live").strip()
+
+    def args(self, name):
+        path = self.tmp / "bin" / (name + ".args")
+        return path.read_text() if path.exists() else ""
+
+    def test_tmux_split(self):
+        out = self.live(TMUX="/tmp/tmux-1/default,1,0")
+        self.assertTrue(out.startswith("LIVE: opened the log in a tmux pane"))
+        self.assertIn("split-window", self.args("tmux"))
+        self.assertIn("watch --session " + self.sid, self.args("tmux"))
+
+    def test_iterm_split(self):
+        out = self.live(TERM_PROGRAM="iTerm.app")
+        self.assertIn("an iTerm2 pane", out)
+        self.assertIn("split vertically", self.args("osascript"))
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS fallback")
+    def test_ide_terminal_falls_back_to_a_window(self):
+        out = self.live(TERMINAL_EMULATOR="JetBrains-JediTerm")
+        self.assertIn("a new Terminal window", out)
+        self.assertIn('tell application "Terminal" to do script', self.args("osascript"))
+        self.assertIn("watch --session " + self.sid, out)  # the command, to paste
+
+    def test_failed_split_falls_through(self):
+        self.fake_bin("tmux", status=1)
+        bindir = self.tmp / "bin"
+        e = dict(self.env, PATH=str(bindir) + os.pathsep + self.env["PATH"], TMUX="x",
+                 TERM_PROGRAM="", WEZTERM_PANE="", KITTY_WINDOW_ID="")
+        out = run([sys.executable, str(QUEST), "dispatch", "--stdin"], str(self.repo), e, "live")
+        self.assertNotIn("tmux pane", out)
+        self.assertIn("watch --session", out)
+
+    def test_watch_once_follows_the_latest_session(self):
+        out = self.q("watch", "--once")
+        self.assertIn("No log yet", out)
+        self.start()
+        other = {"CLAUDE_CODE_SESSION_ID": "sess-bbbb2222"}
+        self.hook("prompt", {"session_id": "sess-bbbb2222", "prompt": "hi"}, **other)
+        os.utime(str(self.tmp / "quests" / re.sub(r"[^A-Za-z0-9]+", "-", self.root) / "sess-bbbb2222.json"),
+                 (2e9, 2e9))
+        self.assertIn("live · session sess-bbb", self.q("watch", "--once"))
+        pinned = self.q("watch", "--once", "--session", self.sid)
+        self.assertIn("▶ #1 Build the thing", pinned)
+        self.assertNotIn("/quests help", pinned)
+
+
 class StatusLine(QuestTest):
     def line(self, **env):
         payload = {"session_id": self.sid, "workspace": {"current_dir": str(self.repo)}}

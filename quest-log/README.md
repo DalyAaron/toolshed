@@ -129,6 +129,7 @@ of a log that keeps itself. Either:
 | `/quests todo 3` · `3.2` · `r1` | Send a quest, objective or rumor to `/todo`. |
 | `/quests adopt [n\|all]` | Continue unfinished quests from earlier sessions of this repo (worktrees included). |
 | `/quests chronicle` | The session as markdown, for a PR description or a handoff. |
+| `/quests live` | The log in a pane beside Claude, redrawn as it works. |
 | `/quests config` | Settings. |
 | `/quests help` | The full reference. |
 
@@ -147,6 +148,24 @@ of a log that keeps itself. Either:
 
 When a session starts, Claude hears about quests left unfinished in this
 project over the last week, and mentions them if they're relevant.
+
+## Watch it live
+
+`/quests` shows the log between turns. To watch it while Claude works, run
+`/quests live`: the log opens beside Claude and redraws as it changes. Close it
+with ctrl-c.
+
+Where it opens depends on your terminal:
+
+| Terminal | `/quests live` opens |
+| :--- | :--- |
+| tmux (inside any terminal) | a split pane |
+| iTerm2, WezTerm, kitty (with remote control on) | a split pane |
+| IDE terminals, Terminal.app, anything else on macOS | a new Terminal window |
+
+It also prints the command it ran, so you can paste it into a split you open
+yourself instead (⌘⇧D in a JetBrains terminal, for example). The first time,
+macOS may ask whether Claude Code can control Terminal or iTerm.
 
 ## Status line
 
@@ -201,6 +220,10 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 open.
 
 ## Changelog
+
+### Unreleased
+
+- **`/quests live`**: the log in a pane beside Claude, redrawn as it works.
 
 ### 1.0.0
 

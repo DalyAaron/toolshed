@@ -12,6 +12,7 @@ renders the result. See DESIGN.md for why it is shaped this way.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -1030,6 +1031,94 @@ def cmd_adopt(state: dict, target: "str | None") -> str:
     return "Adopted " + ", ".join(f"#{m['id']} {m['title']}" for m in moved) + "."
 
 
+# ------------------------------------------------------------------ live view
+
+def latest_session(root: str) -> "Path | None":
+    """The most recently written log in this project: the session being worked."""
+    try:
+        logs = [f for f in (store_base() / slug(root)).glob("*.json")]
+    except OSError:
+        return None
+    return max(logs, key=lambda f: f.stat().st_mtime) if logs else None
+
+
+def watch(sid: "str | None", once: bool = False) -> int:
+    """Redraw the log whenever it changes, until ctrl-c. Read-only.
+
+    With a session id it follows that session; without one, whichever session
+    in this project wrote last, so a new session is picked up by itself.
+    """
+    root = project_root()
+    seen: object = ()  # never a real stamp, so the first pass always draws
+    try:
+        while True:
+            path = state_path(sid, root) if sid else latest_session(root)
+            try:
+                stamp = (path, path.stat().st_mtime) if path else None
+            except OSError:
+                stamp = None
+            if stamp != seen:
+                seen = stamp
+                if stamp:
+                    body = render_log(load(path, path.stem, root))
+                    foot = f"live · session {path.stem[:8]} · ctrl-c to close"
+                else:
+                    body = f"{glyphs()['head']} — {Path(root).name}\n\nNo log yet; waiting for Claude to start one."
+                    foot = "live · ctrl-c to close"
+                body = body.split("\n`/quests <n>`")[0]  # the footer's commands don't apply here
+                if not once:
+                    sys.stdout.write("\033[H\033[2J")
+                sys.stdout.write(f"{body}\n\n{foot}\n")
+                sys.stdout.flush()
+            if once:
+                return 0
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        return 0
+
+
+def launch_live(sid: str, root: str) -> str:
+    """Open `quest watch` beside Claude, in whatever the terminal allows.
+
+    Splits where a terminal can be scripted to: tmux, iTerm2, WezTerm, kitty.
+    Elsewhere on macOS it opens a Terminal window, since IDE terminals (and
+    Terminal.app itself) can't be split from a command. The command is always
+    printed too, to paste into a split you open yourself.
+    """
+    cmd = f"{shlex.quote(sys.executable)} {shlex.quote(cli())} watch --session {shlex.quote(sid)}"
+    shell_cmd = f"cd {shlex.quote(root)} && {cmd}"
+    env = os.environ
+    tries = []
+    if env.get("TMUX"):
+        tries.append(("a tmux pane", ["tmux", "split-window", "-h", "-c", root, cmd]))
+    if env.get("TERM_PROGRAM") == "iTerm.app":
+        script = ('tell application "iTerm2"\n'
+                  '  tell current session of current window\n'
+                  '    set pane to (split vertically with default profile)\n'
+                  '  end tell\n'
+                  '  tell pane to write text ' + json.dumps(shell_cmd) + '\n'
+                  'end tell')
+        tries.append(("an iTerm2 pane", ["osascript", "-e", script]))
+    if env.get("WEZTERM_PANE"):
+        tries.append(("a WezTerm pane", ["wezterm", "cli", "split-pane", "--right", "--cwd", root,
+                                         "--", "sh", "-c", cmd]))
+    if env.get("KITTY_WINDOW_ID"):
+        tries.append(("a kitty split", ["kitty", "@", "launch", "--location=vsplit", "--cwd", root,
+                                        "sh", "-c", cmd]))
+    if sys.platform == "darwin":
+        script = 'tell application "Terminal" to do script ' + json.dumps(shell_cmd)
+        tries.append(("a new Terminal window", ["osascript", "-e", script]))
+    for where, argv in tries:
+        try:
+            ok = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if ok:
+            return f"LIVE: opened the log in {where}; it redraws as Claude works.\nOr, in a split of your own: {shell_cmd}"
+    return f"LIVE: couldn't open a pane from here. Open a split and run:\n{shell_cmd}"
+
+
 # --------------------------------------------------------- commands (user-facing)
 
 def cmd_help() -> str:
@@ -1054,6 +1143,12 @@ STEER
   /quests adopt         Unfinished quests from other recent sessions of this
                         repo, including its worktrees, numbered.
   /quests adopt 2       Continue #2 in this session (or `adopt all`).
+
+WATCH
+  /quests live          The log in a pane beside Claude, redrawn as it works.
+                        Splits tmux, iTerm2, WezTerm and kitty; elsewhere on
+                        macOS opens a Terminal window. Always prints the
+                        command, for a split you open yourself.
 
 SHARE
   /quests chronicle     The session told as markdown: what you asked, what was
@@ -1117,6 +1212,7 @@ USER_COMMANDS = re.compile(
       | todo \s+ (?P<todo>\#?\d+(?:\.\d+)? | r\d+)
       | (?P<adopt>adopt) (?: \s+ (?P<adopt_what>\d+|all) )?
       | (?P<chronicle>chronicle|story)
+      | (?P<live>live|watch)
       | (?P<config>config) (?: \s+ (?P<cfg_key>\w+) (?: \s+ (?P<cfg_val>\S+) )? )?
       | (?P<help>help)
     )$""",
@@ -1153,6 +1249,8 @@ def dispatch(raw: str) -> str:
             result = cmd_adopt(state, g["adopt_what"])
         elif g["chronicle"]:
             return render_chronicle(state)
+        elif g["live"]:
+            return launch_live(sid, root)
         elif g["config"]:
             if g["cfg_key"] and g["cfg_key"].lower() not in SETTINGS:
                 return f"No setting {g['cfg_key']!r}. Settings: {', '.join(SETTINGS)}."
@@ -1523,6 +1621,10 @@ def main() -> int:
         except Exception:
             pass  # a broken status line must not show a traceback
         return 0
+
+    if cmd == "watch":
+        pos, flags = parse_flags(argv[1:], {"session"})
+        return watch(first(flags, "session") or None, once="--once" in pos)
 
     if cmd == "dispatch":
         raw = sys.stdin.read() if "--stdin" in argv else " ".join(argv[1:])
