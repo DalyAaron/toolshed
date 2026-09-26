@@ -10,6 +10,16 @@ claude plugin marketplace add DalyAaron/toolshed
 
 Then install whatever you want from it.
 
+To update, refresh the shelf and then the tool:
+
+```bash
+claude plugin marketplace update toolshed
+claude plugin update <tool>@toolshed
+```
+
+Or, inside a Claude Code session, run `/plugin` and update from there, without
+leaving the session. Updates load in your next session.
+
 ## Tools
 
 |           | Tool                       | Install | What it does |

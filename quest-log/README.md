@@ -106,6 +106,17 @@ claude plugin install quest-log@toolshed
 Start a new session so the hooks load. There's nothing else to do: Claude
 starts keeping the log on its own.
 
+To update later:
+
+```bash
+claude plugin marketplace update toolshed
+claude plugin update quest-log@toolshed
+```
+
+Or, inside a Claude Code session, run `/plugin` and update the marketplace and
+the plugin from there, without leaving the session. Either way, the update
+loads in your next session.
+
 **Let Claude write the log without asking.** Claude updates the log with a
 small `quest` command as it works, several times a turn. In the default
 permission mode each of those asks for your approval, which defeats the point

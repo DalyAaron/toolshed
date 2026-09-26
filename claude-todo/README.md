@@ -40,7 +40,16 @@ park something:
 /todo something I want to come back to
 ```
 
-`claude plugin update claude-todo` picks up later releases.
+To update later:
+
+```bash
+claude plugin marketplace update toolshed
+claude plugin update claude-todo@toolshed
+```
+
+Or, inside a Claude Code session, run `/plugin` and update the marketplace and
+the plugin from there, without leaving the session. Either way, the update
+loads in your next session.
 
 <details>
 <summary>Running from a local checkout instead</summary>
