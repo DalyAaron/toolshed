@@ -1,11 +1,12 @@
 # /quests
 
-Claude keeps a quest log of your session.
+Every task you give Claude becomes a quest. Claude writes down what you asked,
+checks off each step as it goes, and tells you when it needs you.
 
-Everything you ask Claude to do goes on the log: your words, quoted; why it
-matters; what "done" means; the objectives, checked off as they land; the
-decisions Claude made along the way; and anything it's waiting on you for.
-Step away, come back, type `/quests`, and you know where things stand.
+Wander off. When you're back, type `/quests` to see where things stand.
+
+**[See it in action →](https://claude.ai/artifact/QeWVPd3Fasb3kTEso7c4Sr)** a
+tour of every feature, with Claude Code session demos.
 
 ```
 ╭─ 📜 QUEST LOG ────────────────────────────────────── toolshed · turn 14 ─╮
