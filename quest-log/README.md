@@ -5,6 +5,12 @@ checks off each step as it goes, and tells you when it needs you.
 
 Wander off. When you're back, type `/quests` to see where things stand.
 
+The log lives outside the conversation, so it **survives a `/compact`**. When
+a long session is compacted, the summary is all Claude keeps of what you
+asked; quest-log hands it the full log straight back (every ask, what's done,
+what's left, what's waiting on you), so it picks up where it was instead of
+working from a paraphrase. Resuming a session does the same.
+
 **[See it in action →](https://claude.ai/artifact/QeWVPd3Fasb3kTEso7c4Sr)** a
 tour of every feature, with Claude Code session demos.
 

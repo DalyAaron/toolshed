@@ -12,7 +12,9 @@ want to spend the next three turns talking about it.
 ```
 
 That's the whole interaction. The idea is saved, Claude carries on with what it
-was doing, and the todo finds its way back to you later.
+was doing, and the todo finds its way back to you later, even after a
+`/compact`: todos live outside the conversation, so summarising it away can't
+lose them (see [Reminders](#reminders)).
 
 Parked todos are scoped to **the session, in this project, under this Claude Code
 profile**. They remember the branch and the commit you were on when the thought
