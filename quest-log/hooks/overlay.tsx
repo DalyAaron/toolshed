@@ -54,9 +54,24 @@ type Els = Pick<Elements['desktop'], 'Box' | 'Text' | 'Button' | 'Link'> &
 // A surface's table names every element of every surface, one it can't draw
 // drawing nothing, so what the views may use goes by the surface, not by
 // what the table holds.
+//
+// On a terminal a Button is drawn `[Label]`: plain (none of the engine's
+// `[ Label ]` chrome) with the brackets in its own text, the main one in the
+// accent colour as a primary would be. A plain Button shows its hotkey as
+// `l: ` before it, so there it has none; Tab and the arrows still reach it.
+// Elsewhere the surface's own buttons, hotkeys and all.
 function elementsFor(table: Elements[RenderSurface], surface: RenderSurface): Els {
   const all = table as unknown as Elements['terminal'] & Elements['desktop']
-  const { Box, Text, Button, Link } = all
+  const { Box, Text, Link } = all
+  const Button: Els['Button'] =
+    surface === 'terminal'
+      ? ({ hotkey: _, ...props }) =>
+          all.Button({
+            ...props,
+            plain: true,
+            children: Text({ color: props.variant === 'primary' ? 'suggestion' : undefined, children: `[${props.label ?? ''}]` }),
+          })
+      : all.Button
   return {
     Box,
     Text,

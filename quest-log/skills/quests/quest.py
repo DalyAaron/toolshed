@@ -89,13 +89,16 @@ GLYPHS = {
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
     "1.4.0": (
-        "/quests 1.4.0 — pets! A mystery egg at `/quests shop` hatches\n"
-        "one of ten, a dragon if you're lucky. Name, feed and pet them\n"
-        "at /quests pets. With the overlay on, they move, and so does the shop."
+        "/quests 1.4.0 — pets! A mystery egg at\n"
+        "`/quests shop` hatches one of ten, a dragon if you're lucky.\n"
+        "Name, feed and pet them at /quests pets. With the overlay on,\n"
+        "they move, and so does the shop."
     ),
     "1.3.0": (
         # Kept under ~70 columns a line: the terminal indents hook output
         # by five, and an 80-column window wraps anything longer mid-line.
+        # The first line shares its row with "SessionStart:startup says: ",
+        # so it's kept under ~45.
         "/quests 1.3.0 — new, off by default: the overlay.\n"
         "`/quests config overlay on` draws the log inside Claude Code:\n"
         "a quest pane with the shop and your inventory (/quest-pane),\n"
@@ -2370,7 +2373,22 @@ def upgrade_note() -> "str | None":
             used = False
         if not used:
             return None
-    return UPGRADE_NOTES.get(version)
+    return release_note(version, seen)
+
+
+def release_note(version: str, seen: "str | None") -> "str | None":
+    """The note for `version`; for a patch with none of its own, its minor's
+    (1.4.1 tells someone coming from 1.3 about 1.4.0), unless they'd already
+    seen that minor."""
+    if version in UPGRADE_NOTES:
+        return UPGRADE_NOTES[version]
+    minor = version.split(".")[:2]
+    if seen and seen.split(".")[:2] == minor:
+        return None
+    def key(v: str) -> "list[int]":
+        return [int(p) if p.isdigit() else 0 for p in v.split(".")]
+    same = [v for v in UPGRADE_NOTES if v.split(".")[:2] == minor and key(v) <= key(version)]
+    return UPGRADE_NOTES[max(same, key=key)] if same else None
 
 
 def hook_session_start(payload: dict) -> None:

@@ -1,7 +1,7 @@
 {
   "name": "quest-log",
   "displayName": "/quests",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Claude keeps a quest log of what you asked and where it's up to: the ask, why it matters, objectives checked off as they land, decisions, and what's waiting on you.",
   "author": {
     "name": "Aaron Daly"

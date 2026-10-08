@@ -326,16 +326,24 @@ class SessionStart(QuestTest):
         self.assertEqual(json.loads(config.read_text())["last_seen_version"], version)
         config.write_text(json.dumps({"last_seen_version": "0.0.1"}))
         out = self.hook("session-start")
-        expect = self.module().UPGRADE_NOTES.get(version)
+        expect = self.module().release_note(version, "0.0.1")
+        self.assertTrue(expect)
         self.assertEqual(out.get("systemMessage"), expect)
         self.assertNotIn("systemMessage", self.hook("session-start"))
+
+    def test_a_patch_without_a_note_tells_of_its_minor_once(self):
+        mod = self.module()
+        self.assertEqual(mod.release_note("1.4.1", "1.3.0"), mod.UPGRADE_NOTES["1.4.0"])
+        self.assertIsNone(mod.release_note("1.4.1", "1.4.0"))
+        self.assertEqual(mod.release_note("1.4.0", "1.4.0"), mod.UPGRADE_NOTES["1.4.0"])
+        self.assertIsNone(mod.release_note("9.9.1", "1.0.0"))
 
     def test_upgrade_from_unversioned_install(self):
         """0.1.0 never recorded a version; an existing store marks the upgrade."""
         self.start()
         out = self.hook("session-start")
         version = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())["version"]
-        self.assertEqual(out.get("systemMessage"), self.module().UPGRADE_NOTES.get(version))
+        self.assertEqual(out.get("systemMessage"), self.module().release_note(version, None))
 
     def module(self):
         spec = importlib.util.spec_from_file_location("quest", str(QUEST))

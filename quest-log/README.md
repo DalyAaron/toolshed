@@ -325,11 +325,19 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-1.4.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
+1.4.1. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
 `claude plugin test quest-log` for the overlay. See [DESIGN.md](./DESIGN.md)
 for how it works and what's still open.
 
 ## Changelog
+
+### 1.4.1
+
+- Buttons in the terminal pane read `[Log]` rather than `[ Log ]`. Their
+  hotkeys are dropped there (a plain button would print `l: ` before it);
+  Tab and the arrows still reach them, and the desktop keeps both.
+- The 1.4.0 note fits an 80-column terminal, and someone updating from 1.3
+  straight to a 1.4 patch still gets it.
 
 ### 1.4.0
 
