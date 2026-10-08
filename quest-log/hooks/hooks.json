@@ -1,5 +1,5 @@
 {
-  "description": "quest-log: brief Claude on the log protocol at session start, record each prompt as an ask, notice unlogged edits and commits, and show log changes in the terminal.",
+  "description": "quest-log: brief Claude on the log protocol at session start, record each prompt as an ask, notice unlogged edits and commits, and show log changes in the terminal; with the overlay setting on, draw the log inside Claude Code (hooks module overlay.tsx).",
   "hooks": {
     "SessionStart": [
       {
@@ -46,5 +46,8 @@
         ]
       }
     ]
-  }
+  },
+  "modules": [
+    "./overlay.tsx"
+  ]
 }

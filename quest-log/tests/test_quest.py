@@ -242,6 +242,23 @@ class Nudge(QuestTest):
         self.q("check", "1.2")
         self.assertEqual(self.hook("stop", CLAUDE_QUESTS_TOASTS="off"), {})
 
+    def test_overlay_takes_over_the_stop_line(self):
+        self.start()
+        out = self.hook("stop", CLAUDE_QUESTS_OVERLAY="on", CLAUDE_QUESTS_OVERLAY_LIVE="1")
+        self.assertNotIn("systemMessage", out)
+        self.assertEqual(self.state()["toasts"], [])
+        self.bash("git commit -m y")
+        out = self.hook("stop", CLAUDE_QUESTS_OVERLAY="on", CLAUDE_QUESTS_OVERLAY_LIVE="1",
+                        CLAUDE_QUESTS_REMINDERS="strict")
+        self.assertEqual(out["decision"], "block")
+
+    def test_overlay_keeps_the_stop_line_unless_on_and_live(self):
+        """Setting on in a Claude Code too old for the mod, or the mod live
+        after the setting went off: either way the line still shows."""
+        for env in ({"CLAUDE_QUESTS_OVERLAY": "on"}, {"CLAUDE_QUESTS_OVERLAY_LIVE": "1"}):
+            self.start()
+            self.assertIn("systemMessage", self.hook("stop", **env))
+
     def test_summary_toast_replays_the_trial_turn(self):
         """The busy turn from the interactive trial, as one line."""
         self.start()
@@ -720,6 +737,23 @@ class Shop(QuestTest):
         path.parent.mkdir(parents=True)
         path.write_text('{"gold": 6}')
         self.assertIn("APPRENTICE · 60 xp", self.quests())
+
+    def test_armory_is_the_shop_as_data(self):
+        """What the overlay draws its shop, inventory and hall from."""
+        self.fund(12, xp=320, owned=["beads"], equipped={"bar": "beads"})
+        self.quests("buy double")
+        data = json.loads(self.q("armory"))
+        self.assertEqual((data["gold"], data["xp"]), (2, 320))
+        self.assertEqual(data["rank"], {"name": "Journeyman", "floor": 301,
+                                        "next": {"name": "Artificer", "floor": 1001}})
+        self.assertEqual(data["look"], {"bar": ["●", "○"], "trophy": "🏆", "banner": None})
+        wares = {w["id"]: w for w in data["wares"]}
+        self.assertEqual(list(wares), list(SessionStart.module(self).SHOP))
+        self.assertEqual({k: wares["double"][k] for k in ("price", "owned", "equipped", "preview")},
+                         {"price": 10, "owned": True, "equipped": True, "preview": "╔══╗"})
+        self.assertEqual((wares["rounded"]["owned"], wares["rounded"]["equipped"]), (True, False))
+        self.assertEqual((wares["gem"]["owned"], wares["gem"]["section"]), (False, "✦ TROPHIES"))
+        self.assertEqual((data["plaque_price"], data["plaques"]), (3, []))
 
     def test_buy_once_equips_and_charges(self):
         self.fund(12)

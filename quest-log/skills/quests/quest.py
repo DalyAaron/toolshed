@@ -39,6 +39,13 @@ SETTINGS: "dict[str, tuple[object, tuple, str]]" = {
         "Claude no tokens. 'summary' is one line per turn, always with emoji "
         "(📜 #1 updated · ✔2 · 🏆 #1 complete); 'full' is one line per change.",
     ),
+    "overlay": (
+        "off", ("off", "on"),
+        "Draw the log inside Claude Code: a quest pane (/quest-pane), a toast "
+        "for each change as it lands, and a band above the prompt while a quest "
+        "waits on you. Takes over from the end-of-turn toast line. Needs Claude "
+        "Code 2.1.294 or newer.",
+    ),
     "todo_handoff": (
         "ask", ("ask", "auto"),
         "Whether Claude may copy entries into /todo. 'ask' only when you ask or "
@@ -81,6 +88,14 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.3.0": (
+        # Kept under ~70 columns a line: the terminal indents hook output
+        # by five, and an 80-column window wraps anything longer mid-line.
+        "/quests 1.3.0 — new, off by default: the overlay.\n"
+        "`/quests config overlay on` draws the log inside Claude Code:\n"
+        "a quest pane with the shop and your inventory (/quest-pane),\n"
+        "a toast as each change lands, and a band when a quest waits on you."
+    ),
     "1.2.0": (
         "/quests 1.2.0 — finished work now earns gold 💰 and XP, across every repo.\n"
         "Spend gold at `/quests shop` on frames, bars, trophies and banners, and\n"
@@ -1498,6 +1513,35 @@ def cmd_engrave(state: dict, ident: str) -> str:
     return f"Engraved #{quest['id']} as plaque p{pid} for {PLAQUE_PRICE} {GOLD}; it's up in /quests trophies."
 
 
+def armory() -> dict:
+    """The purse, the wares and the hall as data, for the overlay's shop,
+    inventory and trophies (hooks/overlay.tsx). Prices, looks and what's
+    owned stay defined here; the overlay only draws them and presses
+    buy / equip / unequip / engrave / banner through `dispatch`."""
+    purse = wallet()
+    name, floor, up = rank(purse["xp"])
+    wares = []
+    for slot, head in SHOP_SECTIONS:
+        for item, spec in SHOP.items():
+            if spec["slot"] == slot:
+                wares.append({
+                    "id": item, "slot": slot, "section": head, "name": ware_name(item),
+                    "price": spec["price"], "preview": preview(item),
+                    "owned": owns(item), "equipped": equipped(slot) == item,
+                })
+    bar = look("bar")
+    return {
+        "gold": purse["gold"], "xp": purse["xp"],
+        "rank": {"name": name, "floor": floor,
+                 "next": {"name": up[0], "floor": up[1]} if up else None},
+        "look": {"bar": list(bar), "trophy": look("trophy"), "banner": look("banner")},
+        "wares": wares,
+        "plaque_price": PLAQUE_PRICE,
+        "plaques": [dict({k: p.get(k) for k in ("id", "title", "outcome", "project", "date", "session", "quest")},
+                         shown=p.get("shown", True)) for p in purse["plaques"]],
+    }
+
+
 def main_repo_slug(root: str) -> str:
     """Slug of this repo's main checkout, the same for every worktree of it."""
     if root not in _MAIN_SLUG:
@@ -1857,7 +1901,7 @@ SETTINGS
   /quests config <k> <v>
                         Change one. style: rpg | plain  reminders: nudge |
                         strict | off  toasts: summary | full | off
-                        todo_handoff: ask | auto
+                        overlay: off | on  todo_handoff: ask | auto
 
 WHAT CLAUDE LOGS
   quest      A request that needs edits or more than one step. Chat and quick
@@ -2272,7 +2316,9 @@ def hook_stop(payload: dict) -> None:
         }
     write_json(path, state)
     system = None
-    if toasts and conf["toasts"] == "summary":
+    if conf["overlay"] == "on" and os.environ.get("CLAUDE_QUESTS_OVERLAY_LIVE"):
+        pass  # the overlay (hooks/overlay.tsx) already toasted each change as it landed
+    elif toasts and conf["toasts"] == "summary":
         system = summarize_toasts(toasts)
     elif toasts and conf["toasts"] == "full":
         system = "\n".join(t if isinstance(t, str) else t["text"] for t in toasts)
@@ -2353,6 +2399,10 @@ def main() -> int:
     if cmd == "watch":
         pos, flags = parse_flags(argv[1:], {"session"})
         return watch(first(flags, "session") or None, once="--once" in pos)
+
+    if cmd == "armory":
+        print(json.dumps(armory(), ensure_ascii=False))
+        return 0
 
     if cmd == "dispatch":
         raw = sys.stdin.read() if "--stdin" in argv else " ".join(argv[1:])

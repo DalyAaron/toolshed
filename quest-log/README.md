@@ -207,6 +207,34 @@ It also prints the command it ran, so you can paste it into a split you open
 yourself instead (⌘⇧D in a JetBrains terminal, for example). The first time,
 macOS may ask whether Claude Code can control Terminal or iTerm.
 
+## The overlay
+
+> **Needs Claude Code 2.1.294 or newer.** Off by default.
+
+`/quests config overlay on` draws the log inside Claude Code itself, with
+nothing to split or install:
+
+- **A quest pane** docked beside the transcript: the tracked quest with its
+  progress bar and objectives (the next one marked `▸`), then what's awaiting
+  you, other active quests, rumors and the last three completed. It opens by
+  itself where there's room for a sidebar (144+ columns); `/quest-pane` opens
+  or closes it at any width.
+- **A toast for each change**, floating over the top right of the transcript
+  as the change lands, instead of one summary line at the end of the turn.
+- **A band above the prompt** while a quest is waiting on you, with its
+  question, so you don't miss it if the pane is closed.
+- **The shop, your inventory and the hall**, as tabs in the pane (Log · Shop
+  · Inventory · Trophies, or `/quest-pane shop`). Their buttons do what the
+  `/quests` commands do: **Buy** and **Equip** in the shop, **Equip**,
+  **Unequip**, **Store** and your custom banner's words in the inventory,
+  and **Engrave** for this session's finished quests in the hall. Only your
+  press spends gold; Claude never does. The log tab wears what you've
+  equipped: your banner, rank, gold and progress bar.
+
+It takes effect within a second, mid-session too, and `/quests config overlay
+off` puts the end-of-turn line back. It only reads the log; Claude writes it
+the same way as before.
+
 ## Status line
 
 Show the tracked quest under the prompt:
@@ -245,6 +273,7 @@ It prints nothing when there's no quest.
 | `style` | `rpg` | `plain` drops the emoji and quest vocabulary, which saves tokens when Claude relays the log. |
 | `reminders` | `nudge` | `nudge`: after Claude edits files or commits without logging it, it's told on your next prompt. `strict`: it can't end a turn until it logs them. `off`: no hooks, no log keeping. |
 | `toasts` | `summary` | Terminal notices when the log changes. `summary`: one line per turn, always with emoji. `full`: one line per change. `off`: none. |
+| `overlay` | `off` | `on`: the log drawn inside Claude Code: a quest pane, a toast per change, and a band when a quest waits on you. Replaces the `toasts` line. Needs Claude Code 2.1.294+. See [The overlay](#the-overlay). |
 | `todo_handoff` | `ask` | `auto` also copies every rumor to `/todo` as it's noted. |
 
 Set with `/quests config <key> <value>`, or for one session with
@@ -262,10 +291,21 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-1.2.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+). See [DESIGN.md](./DESIGN.md) for how it works and what's still
+1.3.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
+`claude plugin test quest-log` for the overlay. See [DESIGN.md](./DESIGN.md) for how it works and what's still
 open.
 
 ## Changelog
+
+### 1.3.0
+
+- **The overlay** (`/quests config overlay on`, off by default; needs Claude
+  Code 2.1.294+): a quest pane docked beside the transcript (`/quest-pane`), a
+  toast for each log change as it lands, and a band above the prompt while a
+  quest waits on you. With it on, the end-of-turn toast line is left out.
+- **Shop, inventory and trophies in the overlay**, as tabs of the pane, with
+  Buy / Equip / Unequip / Store / Engrave buttons and the custom banner's
+  words, run through the same `/quests` commands.
 
 ### 1.2.0
 

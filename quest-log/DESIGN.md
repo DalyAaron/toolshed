@@ -157,6 +157,57 @@ Verified for `Stop` too: a headless `claude -p --output-format stream-json`
 run emits each line as an `informational` event prefixed `Stop says:`, which is
 what the terminal prints.
 
+## The overlay
+
+The `overlay` setting (off by default) draws the log inside Claude Code. It's
+the plugin's one hooks module, `hooks/overlay.tsx`: TypeScript function hooks
+that run in the session, listed under `modules` in the same `hooks.json` as
+the command hooks. It reads the session's log and draws it: a docked pane, a
+band above the prompt while a quest is awaiting the user, and one floating
+toast per change. It never writes the log; `quest.py` stays the only writer.
+
+**One plugin, not two.** The overlay reads `quest.py`'s store directly, so the
+two have to agree on its format. Shipped together they always do; as a
+separate plugin they could be installed at different versions and the overlay
+would break without saying so. It also has no use without quest-log.
+
+**Off by default, read like any setting.** It reads `overlay` the way
+`load_config` does (`CLAUDE_QUESTS_OVERLAY`, then `config.json`), every poll,
+so `/quests config overlay on` takes effect mid-session. While off it draws
+nothing and toasts nothing, but it still notes what's queued, so turning it on
+mid-turn doesn't replay the turn so far.
+
+**Toasts as they land.** It re-reads the log after every Bash call (every
+`quest` write is one) and every 750ms otherwise, and toasts whatever has
+joined the queue since the last read. The queue only grows within a turn and
+the Stop hook empties it, so "new" is whatever comes after the longest prefix
+it has already seen.
+
+**Handing over the Stop line.** While on, the overlay sets
+`CLAUDE_QUESTS_OVERLAY_LIVE` in the session's environment, which hooks
+inherit. The Stop hook drops its `systemMessage` only when `overlay` is on
+*and* that variable is set; otherwise each change would show twice. Both are
+required because either one alone is wrong: setting `overlay on` in a Claude
+Code too old to run the module means nothing draws, so the line must stay;
+and a stale variable after the setting goes off must not hide it either. The
+hook still empties the queue and still blocks in strict mode.
+
+**The shop as buttons.** The pane's Shop, Inventory and Trophies tabs draw
+from `quest.py armory`, the purse, the wares and the plaques as JSON, read
+again whenever `wallet.json` changes. Prices, looks and what's owned stay
+defined in `SHOP`; the overlay copies none of them. Each button runs the
+`/quests` command it stands for (`buy double`, `unequip p2`, `engrave 3`)
+through `quest.py dispatch --stdin`, under the session's id and directory,
+so the checks and the wording are the CLI's and its answer shows at the top
+of the pane. That keeps the rule that gold is the user's: a press is the
+user's own act, as typing `/quests buy` is, and nothing Claude runs presses
+one. `engrave` writes the session log as well as the purse, so it shares
+the CLI's small race with a `quest` write Claude makes at the same moment.
+
+**Tests** for the module are `tests/overlay.test.tsx`, run by `claude plugin
+test quest-log`; they stand in for the session, the file system and the
+clock. The Python suite covers the Stop hook's half.
+
 ## The `quest` command, and permissions
 
 Claude calls the CLI throughout the session, outside any skill, so the skill's
