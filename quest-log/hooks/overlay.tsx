@@ -409,21 +409,17 @@ function tabs($: EngineInterface, els: Els, current: View) {
 
 const MARK_COLOR = { done: 'success', failed: 'error', parked: 'inactive', open: 'inactive' } as const
 
-// What a quest left behind: links where it's a URL or a path, a sha as text.
-function loot(els: Els, q: Quest, root: string) {
+// What a quest left behind: a link where it's an https URL, shown without
+// its scheme; paths and shas as text. A terminal without hyperlinks prints a
+// link's URL after its text, and a file:// URL is long for so little.
+function loot(els: Els, q: Quest) {
   const { Box, Text, Link } = els
   if (!q.loot?.length) return null
   return (
     <Box key={`loot${q.id}`} columnGap={1} flexWrap="wrap" paddingLeft={3}>
       <Text dimColor>loot</Text>
       {q.loot.map(x =>
-        /^https?:\/\//.test(x) ? (
-          <Link href={x} label={x} />
-        ) : /^[0-9a-f]{7,40}$/.test(x) ? (
-          <Text dimColor>{x}</Text>
-        ) : (
-          <Link href={`file://${encodeURI(x.startsWith('/') ? x : `${root}/${x}`)}`} label={x} />
-        ),
+        /^https:\/\//.test(x) ? <Link href={x} label={x.slice('https://'.length)} /> : <Text dimColor>{x}</Text>,
       )}
     </Box>
   )
@@ -520,7 +516,7 @@ function logView(els: Els, state: QuestLog | null, gear: Armory | null) {
                 ),
               )}
               {q.outcome && hang(els, `do${q.id}`, ' ', q.outcome, { dimColor: true })}
-              {loot(els, q, state.project)}
+              {loot(els, q)}
             </Box>
           ))}
           {done.length > 3 && <Text dimColor> +{done.length - 3} more (/quests done)</Text>}

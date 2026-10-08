@@ -402,7 +402,10 @@ test('a quest turned in while watched shimmers, then settles; its loot links', a
   if (!first) throw new Error('fixture has no quests')
   write({
     ...LOG,
-    quests: [{ ...first, status: 'done', outcome: 'Shipped', loot: ['docs/a.md', 'https://x.test/pr/1', 'abc1234'] }, ...rest],
+    quests: [
+      { ...first, status: 'done', outcome: 'Shipped', loot: ['docs/a.md', 'https://x.test/pr/1', 'http://x.test/a', 'abc1234'] },
+      ...rest,
+    ],
   })
   await clock.advance(750)
 
@@ -413,7 +416,10 @@ test('a quest turned in while watched shimmers, then settles; its loot links', a
   expect((await pane.find({ in: 'shine1', type: 'Text' }))?.text).toBe('#1 Add pagination')
 
   const links = await pane.findAll({ type: 'Link' })
-  expect(links.map(l => l.props.href)).toEqual(['file:///proj/docs/a.md', 'https://x.test/pr/1'])
+  // only https is a link; a path, a sha and plain http are text
+  expect(links.map(l => [l.props.href, l.props.label])).toEqual([['https://x.test/pr/1', 'x.test/pr/1']])
+  expect(await pane.find({ type: 'Text', text: 'docs/a.md' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'http://x.test/a' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'abc1234' })).toBeDefined()
   await pane.unmount()
 })

@@ -319,6 +319,25 @@ class SessionStart(QuestTest):
                         CLAUDE_CODE_SESSION_ID=other)
         self.assertIn("Build the thing (0/2, session sess-aaa)", self.context(out))
 
+    def test_session_start_puts_quest_on_the_bash_path(self):
+        """Through CLAUDE_ENV_FILE, once however often the hook runs; no top-level bin/."""
+        env_file = self.tmp / "session.env"
+        for source in ("startup", "compact"):
+            self.hook("session-start", {"source": source}, CLAUDE_ENV_FILE=str(env_file))
+        lines = env_file.read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r'^export PATH=\S*/skills/quests/bin:"\$PATH"$')
+        self.assertFalse((PLUGIN / "bin").exists())
+        # what a later Bash command gets: `quest` runs the CLI
+        out = subprocess.run(["sh", "-c", '. "$0" && command -v quest && quest ack', str(env_file)],
+                             cwd=str(self.repo), env=self.env, stdout=subprocess.PIPE,
+                             universal_newlines=True).stdout.splitlines()
+        self.assertEqual(out[0], str(PLUGIN / "skills" / "quests" / "bin" / "quest"))
+        self.assertEqual(len(out), 2, out)  # and `quest ack` answered
+        # no env file (an older Claude Code): nothing written, nothing breaks
+        self.assertEqual(self.hook("session-start", {"source": "startup"}).get("hookSpecificOutput", {})
+                         .get("hookEventName"), "SessionStart")
+
     def test_upgrade_note_once_and_not_on_fresh_install(self):
         version = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())["version"]
         self.assertNotIn("systemMessage", self.hook("session-start"))
@@ -955,9 +974,9 @@ class Tips(QuestTest):
 
 
 class Wrapper(QuestTest):
-    def test_bin_quest_runs_the_cli(self):
+    def test_the_quest_wrapper_runs_the_cli(self):
         self.prompt("x")
-        out = run([str(PLUGIN / "bin" / "quest"), "accept", "--title", "Via bin", "--ask", "1"],
+        out = run([str(PLUGIN / "skills" / "quests" / "bin" / "quest"), "accept", "--title", "Via bin", "--ask", "1"],
                   str(self.repo), self.env)
         self.assertIn("QUEST #1 accepted", out)
 

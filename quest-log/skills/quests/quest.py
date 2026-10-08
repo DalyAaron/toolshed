@@ -2391,7 +2391,27 @@ def release_note(version: str, seen: "str | None") -> "str | None":
     return UPGRADE_NOTES[max(same, key=key)] if same else None
 
 
+def put_quest_on_path() -> None:
+    """`quest` on the Bash tool's PATH for the session: an export in the file
+    Claude Code hands SessionStart hooks (CLAUDE_ENV_FILE), which every later
+    Bash command sources. The wrapper lives in skills/quests/bin, not a
+    top-level bin/, which claude.ai-hosted plugins may not ship. Once per
+    file: a resume or a compact starts the hook again."""
+    env_file = os.environ.get("CLAUDE_ENV_FILE")
+    if not env_file:
+        return
+    line = f'export PATH={shlex.quote(str(Path(__file__).resolve().parent / "bin"))}:"$PATH"\n'
+    try:
+        path = Path(env_file)
+        if line not in (path.read_text() if path.exists() else ""):
+            with path.open("a") as out:
+                out.write(line)
+    except OSError:
+        pass  # no `quest`: the protocol names the full path as well
+
+
 def hook_session_start(payload: dict) -> None:
+    put_quest_on_path()
     note = upgrade_note()  # always records, so a skipped note can't come back
     if cfg()["reminders"] == "off":
         return

@@ -1,0 +1,6 @@
+#!/bin/sh
+# `quest <verb> ...` on the Bash tool's PATH, so one allow rule, Bash(quest *),
+# covers every log write whatever the install path. The SessionStart hook puts
+# this folder on the PATH (through CLAUDE_ENV_FILE); it isn't a top-level bin/,
+# which claude.ai-hosted plugins may not ship.
+exec python3 "$(dirname "$0")/../quest.py" "$@"

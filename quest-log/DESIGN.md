@@ -225,8 +225,10 @@ of every surface and draws nothing for one it lacks):
   quest seen turning in while the pane is up gets a `Client` too,
   `hooks/shimmer.tsx`, which runs a band of light along its title three
   times and settles. Terminal and desktop only; elsewhere both are text.
-- *Links:* a completed quest's loot is a link where it's a URL or a path
-  (`file://` from the project root); a sha stays text.
+- *Links:* a completed quest's loot is a link where it's an `https` URL,
+  shown without its scheme; paths and shas stay text. A terminal without
+  hyperlinks (Terminal.app, tmux by default) prints a link's URL after its
+  text, which for a `file://` path was most of the line.
 
 *Shelves:* the shop's sections fold under a header button and start closed,
 so the tab opens on the sign and six lines rather than every ware. A closed
@@ -250,13 +252,21 @@ in), and in the default permission mode every log write prompted. Plugins can't
 contribute permission rules, and the script's path changes with every update,
 so no path-based rule survives.
 
-What does survive: a plugin's `bin/` is on the Bash tool's `PATH` while the
-plugin is enabled (verified headless: `command -v quest` resolves to
-`quest-log/bin/quest`). So `bin/quest` is a two-line wrapper around
-`quest.py`, the protocol tells Claude to call `quest <verb>`, and the README
-offers one stable rule, `Bash(quest *)`, as the alternative to auto mode. The
-protocol still names the full path as a fallback, for hosts that don't install
-a plugin's `bin/`.
+What does survive is a command name on the Bash tool's `PATH`. So
+`skills/quests/bin/quest` is a two-line wrapper around `quest.py`, the
+protocol tells Claude to call `quest <verb>`, and the README offers one
+stable rule, `Bash(quest *)`, as the alternative to auto mode.
+
+The SessionStart hook puts the wrapper's folder on the `PATH`: Claude Code
+hands SessionStart hooks a `CLAUDE_ENV_FILE`, and every later Bash command
+sources it, so the hook appends one `export PATH=…` line (once per file, as
+a resume or compact runs the hook again). Verified headless: `which -a
+quest` resolves to `skills/quests/bin/quest`. Until 1.4.2 the wrapper was a
+top-level `bin/`, which the CLI puts on the `PATH` by itself, but
+claude.ai-hosted plugins may not ship a top-level `bin/` (it isn't shown on
+the admin approval surface), so Claude Desktop refused to sync the plugin.
+The protocol still names the full path as a fallback, for a host where the
+env file isn't there.
 
 Hooks keep calling `quest.py` through `${CLAUDE_PLUGIN_ROOT}`; they don't need
 the PATH and don't go through permissions.
@@ -461,7 +471,7 @@ quest.py dispatch --stdin             # /quests, incl. adopt and chronicle
 quest.py statusline                   # status-line JSON on stdin
 quest.py watch [--session S] [--once] # live, read-only view of the log
 quest.py hook-{session-start,prompt,post-tool,stop}
-quest <verb> ...                      # bin/ wrapper, on Claude's Bash PATH
+quest <verb> ...                      # skills/quests/bin wrapper, on Claude's Bash PATH
 
 ## Tests
 

@@ -135,8 +135,8 @@ of a log that keeps itself. Either:
   { "permissions": { "allow": ["Bash(quest *)"] } }
   ```
 
-  The plugin puts `quest` on Claude's PATH, so the rule keeps working when an
-  update moves the install; or
+  The plugin puts `quest` on Claude's PATH when a session starts, so the rule
+  keeps working when an update moves the install; or
 - use auto mode (shift+tab to cycle modes, or `claude --permission-mode auto`),
   which runs them without asking.
 
@@ -262,7 +262,7 @@ nothing to split or install:
   pixel-art shop at dusk with lit windows and smoke curling off the chimney,
   animated while you browse. Gold and XP count up when they change, and a
   quest you've just turned in shimmers. A completed quest's loot links to
-  the file or URL. Needs a truecolor terminal (iTerm2, Ghostty, kitty,
+  its URL, when it's one. Needs a truecolor terminal (iTerm2, Ghostty, kitty,
   WezTerm, VS Code's); the desktop app gets the sign as a still picture.
 
 It takes effect within a second, mid-session too, and `/quests config overlay
@@ -325,11 +325,21 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-1.4.1. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
+1.4.2. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
 `claude plugin test quest-log` for the overlay. See [DESIGN.md](./DESIGN.md)
 for how it works and what's still open.
 
 ## Changelog
+
+### 1.4.2
+
+- **Syncs to Claude Desktop.** claude.ai-hosted plugins may not ship a
+  top-level `bin/`, so the `quest` command moved to `skills/quests/bin/`, and
+  the SessionStart hook puts it on Claude's PATH. `Bash(quest *)` still
+  covers every log write.
+- A completed quest's loot in the overlay is a link only when it's an
+  `https` URL; paths and shas are text. A terminal without hyperlinks
+  printed each path's whole `file://` URL after it.
 
 ### 1.4.1
 
