@@ -198,15 +198,49 @@ again whenever `wallet.json` changes. Prices, looks and what's owned stay
 defined in `SHOP`; the overlay copies none of them. Each button runs the
 `/quests` command it stands for (`buy double`, `unequip p2`, `engrave 3`)
 through `quest.py dispatch --stdin`, under the session's id and directory,
-so the checks and the wording are the CLI's and its answer shows at the top
-of the pane. That keeps the rule that gold is the user's: a press is the
+so the checks and the wording are the CLI's, and its answer is a toast
+rather than a line in the pane, which would push the pane down. That keeps the rule that gold is the user's: a press is the
 user's own act, as typing `/quests buy` is, and nothing Claude runs presses
 one. `engrave` writes the session log as well as the purse, so it shares
 the CLI's small race with a `quest` write Claude makes at the same moment.
 
+**More than text where the surface draws it.** Each surface hands the
+module a table of elements, and the pane uses what that surface has, by
+`e.surface` rather than by what's in the table (a table names every element
+of every surface and draws nothing for one it lacks):
+
+- *The shop's sign* is pixel art, drawn procedurally by `hooks/scene.ts` (a
+  shop at dusk, lamplight flickering, smoke off the chimney, stars and
+  fireflies). On a terminal it's a `Raster`, two pixels to a cell as half
+  blocks in truecolor, repainted in place with `$.ui.blit` every 125ms while
+  the shop is in view; three refused repaints in a row (the pane closed, the
+  tab changed) stop the clock and drawing the shop starts it again. Desktop,
+  VS Code and mobile have no `Raster`, so they get the same pixels as a
+  still `Svg`. Docked it's 12 rows; inline, where rows are dear, a smaller
+  shop in 7. We draw every pixel ourselves; there are no image files, since
+  `Image` only shows in kitty and Ghostty.
+- *The purse* (rank, XP, gold) is a `Client`, `hooks/purse.tsx`: a module
+  run on the surface with its own state and frame clock, so a change counts
+  up to the new figure and flashes `+N` without a round trip per frame. A
+  quest seen turning in while the pane is up gets a `Client` too,
+  `hooks/shimmer.tsx`, which runs a band of light along its title three
+  times and settles. Terminal and desktop only; elsewhere both are text.
+- *Links:* a completed quest's loot is a link where it's a URL or a path
+  (`file://` from the project root); a sha stays text.
+
+*Shelves:* the shop's sections fold under a header button and start closed,
+so the tab opens on the sign and six lines rather than every ware. A closed
+header says how many of its wares are still for sale. Which are open is kept in
+`$.state` (`shopOpen`), so it holds while the pane comes and goes.
+
+`Client` was not used for keyboard navigation: a focused pane already walks
+its buttons with Tab and the arrows.
+
 **Tests** for the module are `tests/overlay.test.tsx`, run by `claude plugin
 test quest-log`; they stand in for the session, the file system and the
-clock. The Python suite covers the Stop hook's half.
+clock, and drive the `Client`s' frame clocks. The Python suite covers the
+Stop hook's half. They check the tree each surface is handed, not what a
+terminal paints: for that, look at it in a real terminal.
 
 ## The `quest` command, and permissions
 
@@ -322,6 +356,40 @@ restart. Plaques are the one thing bought more than once: each is a copy of a
 turned-in quest (title, outcome, repo, date), since its session file may be
 long gone when the hall is next opened. Skins apply to the rpg style only;
 `style plain` stays plain.
+
+## Pets
+
+A pet is the one thing in the shop with a life of its own, so it's an
+instance, not an item: `pets` in the purse holds each with its species, name,
+joy, fullness, the time those were last settled (`at`) and when it was last
+petted. Nothing ticks in the background. `settle()` works out where joy and
+fullness have faded to whenever a pet is read or changed, from the hours
+since `at`: fullness by 3 an hour, joy by 2, and three times that for the
+hours it's been under 20 full. So a pet left for a weekend comes back
+miserable and starving, and one fed regularly holds steady.
+
+**One egg, not ten pets.** The shop sells a mystery egg and `hatch()` draws
+the species by weight (duck 16 down to dragon 2, of 100), so what you get is
+a surprise and a dragon is worth showing off. `CLAUDE_QUESTS_SEED` fixes the
+draw, for tests only. Food is the other consumable: bought a portion at a
+time into `food`, used up by feeding.
+
+**Petting is free but tires.** Each pet adds 8 joy, but a second within 30
+seconds adds 2, so mashing the button isn't the way to a happy pet; feeding
+its favourite food is (+10 on top). Feeding a full pet is refused rather
+than wasted.
+
+**Claude never tends them.** They're bought with gold, so they're the user's
+in the same way as the rest of the shop: SKILL.md says so, and like the
+other shop verbs they're reachable only through `/quests`, not `quest`.
+
+In the overlay the Pets tab draws each as a sprite from `hooks/pets.ts`: a
+12-pixel grid of palette letters per species, posed per frame (a breath, a
+blink every few seconds, a hop above 65 joy, a grey sag when glum or hungry,
+hearts for two seconds after a pet, noticed from `petted` changing so a
+`/quests pet` typed at the prompt shows them too). The sign and the pets
+share one clock: whatever the last terminal draw held that moves is
+repainted by `$.ui.blit`, and the clock stops when nothing is taken.
 
 ## /todo handoff
 

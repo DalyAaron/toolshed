@@ -10,6 +10,8 @@ export type Quest = {
   objectives: Objective[]
   awaiting?: string | null
   outcome?: string | null
+  // what it produced: paths, shas, URLs
+  loot?: string[]
 }
 export type Rumor = { id: number; text: string; quest?: number; todo?: unknown }
 export type Toast = { text: string } | string
@@ -43,6 +45,23 @@ export type Plaque = {
   quest: number | null
   shown: boolean
 }
+// quest.py `pet_data`: a pet as it is now, joy and fullness faded since it was
+// last fed or petted. `petted` is when it last was, in epoch seconds.
+export type Pet = {
+  id: number
+  species: string
+  kind: string
+  emoji: string
+  name: string
+  rarity: 'common' | 'uncommon' | 'rare' | 'legendary'
+  likes: string
+  joy: number
+  full: number
+  mood: string
+  hungry: boolean
+  petted: number
+}
+export type Food = { id: string; name: string; emoji: string; price: number; full: number; joy: number; stock: number }
 export type Armory = {
   gold: number
   xp: number
@@ -51,8 +70,12 @@ export type Armory = {
   wares: Ware[]
   plaque_price: number
   plaques: Plaque[]
+  // absent from a quest.py older than pets
+  egg_price?: number
+  food?: Food[]
+  pets?: Pet[]
 }
-export type View = 'log' | 'shop' | 'inventory' | 'trophies'
+export type View = 'log' | 'shop' | 'inventory' | 'trophies' | 'pets'
 
 declare module 'claude-code' {
   interface PluginState {
@@ -67,8 +90,8 @@ declare module 'claude-code' {
       armory: Armory | null
       // which page the pane shows
       view: View
-      // what quest.py said to the last press (Bought..., Not enough gold...)
-      notice: string | null
+      // the shop's shelves the person has opened; all start closed
+      shopOpen: string[]
     }
   }
 }

@@ -189,8 +189,28 @@ plaque, for 3 💰. Plaques stay across repos; unequip one to put it in storage.
 Ranks come from XP, which is never spent: Apprentice (0–300), Journeyman
 (301–1000), Artificer (1001–2000), Archmage (2001+).
 
-Claude only earns gold. It never spends it, and nothing in the shop changes
-how Claude works.
+### Pets
+
+The shop sells one more thing: a **mystery egg** (`/quests buy egg`, 1000 💰).
+One of ten pets hatches from it, some rarer than others: a rubber duck, a
+frog or a slime is common, an axolotl or a fox uncommon, a ghost rare and a
+dragon a one-in-fifty. Buy as many eggs as you like.
+
+```
+/quests pets               the pen: each pet, its joy and how full it is
+/quests name 1 Ember       name pet #1 (then call it by name: /quests pet ember)
+/quests buy kibble         food, a portion at a time: kibble, treat, feast
+/quests feed 1 treat       feed it (leave out the food for its favourite)
+/quests pet 1              free, and it cheers them up
+```
+
+Joy and fullness fade by the hour, and a hungry pet gets glum faster. Each
+species has a favourite food that cheers it more. With the overlay on, the
+Pets tab draws each pet as a little pixel sprite that bobs, blinks, hops
+when it's happy and sags when it isn't, with hearts when you pet it.
+
+Claude only earns gold. It never spends it, never tends your pets, and
+nothing in the shop changes how Claude works.
 
 When a session starts, Claude hears about quests left unfinished in this
 project over the last week, and mentions them if they're relevant.
@@ -229,13 +249,21 @@ nothing to split or install:
   as the change lands, instead of one summary line at the end of the turn.
 - **A band above the prompt** while a quest is waiting on you, with its
   question, so you don't miss it if the pane is closed.
-- **The shop, your inventory and the hall**, as tabs in the pane (Log · Shop
-  · Inventory · Trophies, or `/quest-pane shop`). Their buttons do what the
+- **The shop, your inventory, the hall and your pets**, as tabs in the pane
+  (Log · Shop · Inventory · Trophies · Pets, or `/quest-pane shop`). The
+  shop's shelves start folded, each header saying what it holds; press one
+  to open it. Their buttons do what the
   `/quests` commands do: **Buy** and **Equip** in the shop, **Equip**,
   **Unequip**, **Store** and your custom banner's words in the inventory,
   and **Engrave** for this session's finished quests in the hall. Only your
   press spends gold; Claude never does. The log tab wears what you've
   equipped: your banner, rank, gold and progress bar.
+- **Pixels where the terminal can draw them.** The shop's sign is a little
+  pixel-art shop at dusk with lit windows and smoke curling off the chimney,
+  animated while you browse. Gold and XP count up when they change, and a
+  quest you've just turned in shimmers. A completed quest's loot links to
+  the file or URL. Needs a truecolor terminal (iTerm2, Ghostty, kitty,
+  WezTerm, VS Code's); the desktop app gets the sign as a still picture.
 
 It takes effect within a second, mid-session too, and `/quests config overlay
 off` puts the end-of-turn line back. It only reads the log; Claude writes it
@@ -290,18 +318,33 @@ Set with `/quests config <key> <value>`, or for one session with
 ```
 ~/.claude/quests/<project>/<session>.json   the log
 ~/.claude/quests/config.json                settings
-~/.claude/quests/wallet.json                gold, xp, inventory, plaques
+~/.claude/quests/wallet.json                gold, xp, inventory, plaques, pets
 ```
 
 Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 
 ## Status
 
-1.3.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
-`claude plugin test quest-log` for the overlay. See [DESIGN.md](./DESIGN.md) for how it works and what's still
-open.
+1.4.0. Tests: `python3 quest-log/tests/test_quest.py` (Python 3.6+), and
+`claude plugin test quest-log` for the overlay. See [DESIGN.md](./DESIGN.md)
+for how it works and what's still open.
 
 ## Changelog
+
+### 1.4.0
+
+- **Pets.** A mystery egg (`/quests buy egg`, 1000 💰) hatches one of ten
+  pets, from a common rubber duck to a legendary dragon. Name them, buy food
+  (kibble, treat, feast) and feed them, and pet them; joy and fullness fade
+  by the hour. `/quests pets` is the pen; the overlay has a Pets tab with
+  each pet drawn as an animated pixel sprite.
+- **The overlay draws more than text**: the shop's sign is animated pixel
+  art, gold and XP count up when they change, a quest you've just turned in
+  shimmers, completed quests' loot are links, and marks wear theme colours.
+- **The shop tab folds**: each section starts closed under a header saying
+  what's for sale. Button replies are toasts instead of a line in the pane,
+  and buying says what you got, what you have and what's left on three lines.
+- Food is listed in your inventory.
 
 ### 1.3.0
 

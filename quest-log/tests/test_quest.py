@@ -755,10 +755,98 @@ class Shop(QuestTest):
         self.assertEqual((wares["gem"]["owned"], wares["gem"]["section"]), (False, "✦ TROPHIES"))
         self.assertEqual((data["plaque_price"], data["plaques"]), (3, []))
 
+    # -- pets
+
+    def pet(self, **fields):
+        """A pet as the wallet holds it, settled `hours_ago`."""
+        import time
+        hours = fields.pop("hours_ago", 0)
+        return dict({"id": 1, "species": "cat", "name": "Whiskers", "joy": 50, "full": 50,
+                     "at": int(time.time() - hours * 3600), "petted": 0}, **fields)
+
+    def test_an_egg_hatches_one_of_ten_by_weight(self):
+        self.fund(2010)
+        out = self.quests("buy egg", CLAUDE_QUESTS_SEED="7")
+        self.assertRegex(out, r"^The egg cracks\.\.\. it's an? .+ \((common|uncommon|rare|legendary)\)! "
+                              r"Meet \w+, pet #1\. .* 1010 💰 left\.$")
+        again = self.quests("buy egg", CLAUDE_QUESTS_SEED="7")
+        self.assertIn("pet #2", again)
+        self.assertIn("Not enough gold: a mystery egg costs 1000", self.quests("buy egg"))
+        pets = self.purse()["pets"]
+        mod = SessionStart.module(self)
+        self.assertEqual(len(mod.SPECIES), 10)
+        self.assertEqual(pets[0]["species"], pets[1]["species"])  # same seed, same egg
+        self.assertIn(pets[0]["species"], mod.SPECIES)
+        self.assertEqual((pets[0]["joy"], pets[0]["full"]), (70, 70))
+        # weighted: over many eggs every species turns up, the commonest most
+        import collections, random
+        random.seed(1)
+        seen = collections.Counter(mod.hatch() for _ in range(3000))
+        self.assertEqual(set(seen), set(mod.SPECIES))
+        self.assertGreater(seen["duck"], seen["dragon"] * 4)
+
+    def test_food_is_bought_a_portion_at_a_time_and_fed(self):
+        self.fund(10, pets=[self.pet(species="cat", full=40, joy=40)])
+        self.assertIn("No food in your inventory", self.quests("feed 1"))
+        self.assertEqual(self.quests("buy kibble"), "Bought kibble 🥣 for 1 💰\n×1 in your inventory.\n9 💰 left.")
+        self.assertIn("×1 in your inventory.\n7 💰 left.", self.quests("buy treats"))
+        self.assertIn("No feast in your inventory", self.quests("feed 1 feast"))
+        inventory = self.quests("inventory")
+        self.assertIn("🍖 FOOD", inventory)
+        self.assertRegex(inventory, r"◇ kibble .* Kibble +×1 · /quests feed <pet> kibble")
+        mod = SessionStart.module(self)
+        self.assertEqual({mod.cells(l) for l in inventory.splitlines() if "feed <pet>" in l}, {mod.WIDTH})
+        # no food named: its favourite, when there is some
+        out = self.quests("feed Whiskers")
+        self.assertIn("Whiskers wolfs down the treat 🍪. Its favourite!", out)
+        cat = self.purse()["pets"][0]
+        self.assertAlmostEqual(cat["full"], 50, delta=0.5)
+        self.assertAlmostEqual(cat["joy"], 62, delta=0.5)  # 40 + 12 + 10 for the favourite
+        self.assertEqual(self.purse()["food"], {"kibble": 1, "treat": 0})
+        self.assertIn("wolfs down the kibble", self.quests("feed cat"))
+        self.fund(5, pets=[self.pet(full=99)], food={"kibble": 1})
+        self.assertIn("Whiskers is full", self.quests("feed 1"))
+        self.assertEqual(self.purse()["food"], {"kibble": 1})
+
+    def test_petting_cheers_less_when_it_has_just_been_petted(self):
+        self.fund(0, pets=[self.pet(species="dog", name="Biscuit", joy=50)])
+        self.assertEqual(self.quests("pet 1"), "You pet Biscuit. It wags its tail. Now content.")
+        self.assertIn("though it's had a lot of fuss just now", self.quests("pet biscuit"))
+        self.assertAlmostEqual(self.purse()["pets"][0]["joy"], 60, delta=0.5)  # 8, then 2
+        self.assertIn("No pet 'rex'", self.quests("pet rex"))
+
+    def test_joy_and_fullness_fade_by_the_hour_faster_when_hungry(self):
+        self.fund(0, pets=[self.pet(id=1, joy=80, full=80, hours_ago=10),
+                           self.pet(id=2, name="Tom", joy=80, full=26, hours_ago=10)])
+        pets = {p["id"]: p for p in json.loads(self.q("armory"))["pets"]}
+        # fed the whole time: 2 joy and 3 full an hour
+        self.assertEqual((pets[1]["joy"], pets[1]["full"], pets[1]["hungry"]), (60, 50, False))
+        # hungry after 2 hours: then joy fades at 6 an hour
+        self.assertEqual((pets[2]["joy"], pets[2]["full"], pets[2]["hungry"]), (80 - 4 - 48, 0, True))
+        self.assertEqual(pets[2]["mood"], "glum")
+
+    def test_pets_are_named_and_shown_in_the_pen(self):
+        self.fund(0, pets=[self.pet(species="dragon", name="Smoulder")], food={"feast": 2})
+        self.assertEqual(self.quests("name 1 Sir Flambé"), "Smoulder is now called Sir Flambé 🐉.")
+        pen = self.quests("pets")
+        self.assertIn("#1 🐉 Sir Flambé", pen)
+        self.assertIn("Dragon · legendary", pen)
+        self.assertIn("🍗 2", pen)
+        data = json.loads(self.q("armory"))
+        self.assertEqual(data["egg_price"], 1000)
+        self.assertEqual([f["id"] for f in data["food"]], ["kibble", "treat", "feast"])
+        self.assertEqual(data["food"][2]["stock"], 2)
+        self.assertEqual({k: data["pets"][0][k] for k in ("name", "kind", "rarity", "likes")},
+                         {"name": "Sir Flambé", "kind": "Dragon", "rarity": "legendary", "likes": "feast"})
+        self.fund(0)
+        self.assertIn("The pen is empty", self.quests("pets"))
+        self.assertIn("No pets yet", self.quests("pet 1"))
+
     def test_buy_once_equips_and_charges(self):
         self.fund(12)
         self.assertIn("Not enough gold: the Gem trophy costs 25", self.quests("buy gem"))
-        self.assertIn("Bought the Double frame for 10 💰 and equipped it. 2 💰 left.", self.quests("buy double"))
+        self.assertEqual(self.quests("buy double"),
+                         "Bought the Double frame ╔══╗ for 10 💰\nEquipped, and in your inventory.\n2 💰 left.")
         self.assertIn("You already own the Double frame", self.quests("buy double"))
         self.assertIn("No 'nope' in the shop", self.quests("buy nope"))
         self.assertEqual(self.purse()["gold"], 2)
@@ -827,7 +915,7 @@ class Shop(QuestTest):
         self.assertIn("◆ equipped", shop)
         mod = SessionStart.module(self)
         rows = [l for l in shop.splitlines() if l.startswith("   ") and ("💰" in l or "equipped" in l)]
-        self.assertEqual(len(rows), 13)  # 12 wares for sale and the plaque
+        self.assertEqual(len(rows), 17)  # 12 wares for sale, the plaque, the egg and 3 foods
         self.assertEqual({mod.cells(l) for l in rows}, {mod.WIDTH})
 
     def test_claude_cannot_shop(self):

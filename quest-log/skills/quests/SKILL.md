@@ -52,7 +52,7 @@ Relay it verbatim in a code block.
 Relay it as is, the command in a code block so it's easy to copy. Then carry
 on with anything you were doing; the pane needs nothing from you.
 
-### A frame around `TRINKETS AND TRONKETS`, `🎒 INVENTORY` or `HALL OF TROPHIES` — the shop
+### A frame around `TRINKETS AND TRONKETS`, `🎒 INVENTORY`, `HALL OF TROPHIES` or `🐾 THE PEN` — the shop
 
 Relay it **verbatim in a code block**, no commentary. It's the user's to
 browse; don't suggest what to buy.
@@ -70,10 +70,11 @@ and `/quests <n>` has its history, but don't start on it unless the user asks.
 `/quests todo …` is the user giving permission to hand that entry to `/todo`, so
 nothing more needs asking.
 
-### `Bought` / `Equipped` / `Unequipped` / `Engraved` / `Banner set` — the user spent gold or changed their look
+### `Bought` / `Equipped` / `Unequipped` / `Engraved` / `Banner set` / `The egg cracks` / `… is now called` / `… wolfs down` / `You pet` — the user spent gold, changed their look or tended a pet
 
-One line confirming it. Gold and cosmetics are the user's: never buy, equip or
-engrave anything yourself.
+One line confirming it. Gold, cosmetics and pets are the user's: never buy,
+equip, engrave, feed, name or pet anything yourself. A newly hatched pet is
+worth a word of welcome, by its name.
 
 ### `UNKNOWN:` / `No quest` / `Nothing to adopt` / anything else — a miss
 

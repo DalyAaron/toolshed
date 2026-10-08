@@ -88,6 +88,11 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.4.0": (
+        "/quests 1.4.0 — pets! A mystery egg at `/quests shop` hatches\n"
+        "one of ten, a dragon if you're lucky. Name, feed and pet them\n"
+        "at /quests pets. With the overlay on, they move, and so does the shop."
+    ),
     "1.3.0": (
         # Kept under ~70 columns a line: the terminal indents hook output
         # by five, and an 80-column window wraps anything longer mid-line.
@@ -205,6 +210,36 @@ SHOP = {
 }
 SLOTS = {"frame": "rounded", "bar": "classic", "trophy": "cup", "banner": None}
 
+# Pets. The shop sells one thing, a mystery egg, and what hatches is drawn from
+# SPECIES by weight: a duck is common, a dragon a one-in-fifty. Each pet is the
+# user's to name, feed (food is bought, a portion at a time) and pet (free).
+# Joy and fullness run 0 to 100 and fade by the hour; a hungry pet's joy fades
+# faster. Its favourite food cheers it more.
+EGG_PRICE = 1000
+SPECIES = {
+    "duck": {"name": "Rubber duck", "emoji": "🦆", "default": "Quackers", "weight": 16, "likes": "treat"},
+    "frog": {"name": "Frog", "emoji": "🐸", "default": "Pip", "weight": 14, "likes": "kibble"},
+    "slime": {"name": "Slime", "emoji": "🟢", "default": "Gloop", "weight": 14, "likes": "feast"},
+    "cat": {"name": "Cat", "emoji": "🐱", "default": "Whiskers", "weight": 12, "likes": "treat"},
+    "dog": {"name": "Dog", "emoji": "🐶", "default": "Biscuit", "weight": 12, "likes": "kibble"},
+    "owl": {"name": "Owl", "emoji": "🦉", "default": "Hoot", "weight": 10, "likes": "kibble"},
+    "axolotl": {"name": "Axolotl", "emoji": "🦎", "default": "Bubbles", "weight": 8, "likes": "treat"},
+    "fox": {"name": "Fox", "emoji": "🦊", "default": "Ember", "weight": 8, "likes": "feast"},
+    "ghost": {"name": "Ghost", "emoji": "👻", "default": "Boo", "weight": 4, "likes": "treat"},
+    "dragon": {"name": "Dragon", "emoji": "🐉", "default": "Smoulder", "weight": 2, "likes": "feast"},
+}
+RARITY = ((12, "common"), (8, "uncommon"), (4, "rare"), (0, "legendary"))
+FOOD = {
+    "kibble": {"name": "Kibble", "emoji": "🥣", "price": 1, "full": 30, "joy": 2},
+    "treat": {"name": "Treat", "emoji": "🍪", "price": 2, "full": 10, "joy": 12},
+    "feast": {"name": "Feast", "emoji": "🍗", "price": 4, "full": 70, "joy": 8},
+}
+FAVOURITE_JOY = 10
+PET_JOY, PET_REST, PET_TIRED_JOY = 8, 30, 2  # a pet within PET_REST seconds of the last cheers it less
+JOY_FADE, FULL_FADE, HUNGRY = 2.0, 3.0, 20  # per hour; under HUNGRY full, joy fades three times as fast
+PET_NAME_CELLS = 16
+MOODS = ((90, "ecstatic"), (65, "happy"), (40, "content"), (20, "glum"), (0, "miserable"))
+
 
 def wallet_path() -> Path:
     return store_base() / "wallet.json"
@@ -242,7 +277,7 @@ def wallet() -> dict:
         if "xp" not in purse:  # a purse from before XP: nothing had been spent, so gold is what was earned
             purse["xp"] = purse["gold"] * XP_OBJECTIVE // GOLD_OBJECTIVE
         purse["xp"] = count(purse["xp"])
-        for key, empty in (("owned", []), ("equipped", {}), ("plaques", [])):
+        for key, empty in (("owned", []), ("equipped", {}), ("plaques", []), ("pets", []), ("food", {})):
             if not isinstance(purse.get(key), type(empty)):
                 purse[key] = empty
         _WALLET = (stamp, purse)
@@ -1361,7 +1396,18 @@ def render_shop() -> str:
     out.append(ware_row("", "engrave", "A finished quest, hung in the hall",
                         f"{PLAQUE_PRICE} {GOLD} each"))
     out.append("")
-    out.append(rule("/quests buy <item> · /quests inventory", "", top=False))
+    out.append(" 🥚 PETS")
+    out.append(spread("   egg          🥚         Mystery egg · hatches one of ten pets",
+                      f"{EGG_PRICE} {GOLD}"))
+    out.append("")
+    out.append(" 🍖 FOOD")
+    pack = purse["food"]
+    for item, spec in FOOD.items():
+        have = count(pack.get(item))
+        out.append(spread(f"   {item.ljust(12)} {spec['emoji']}" + " " * 9 + food_note(item),
+                          (f"×{have} · " if have else "") + f"{spec['price']} {GOLD}"))
+    out.append("")
+    out.append(rule("/quests buy <item> · /quests inventory · /quests pets", "", top=False))
     return "\n".join(out)
 
 
@@ -1387,6 +1433,14 @@ def render_inventory() -> str:
             out.append(spread(f"   {'◆' if p.get('shown', True) else '◇'} p{p['id']}".ljust(12)
                               + fit(p["title"], WIDTH - 30),
                               "on display" if p.get("shown", True) else "in storage"))
+        out.append("")
+    food = [(item, spec, count(purse["food"].get(item))) for item, spec in FOOD.items()]
+    if any(have for _, _, have in food):
+        out.append(" 🍖 FOOD")
+        for item, spec, have in food:
+            if have:
+                out.append(spread(f"   ◇ {item.ljust(12)}{spec['emoji']}" + " " * 9 + spec["name"],
+                                  f"×{have} · /quests feed <pet> {item}"))
         out.append("")
     if len(out) == 3:
         out += ["   Only the clothes on your back. `/quests shop` has wares.", ""]
@@ -1415,6 +1469,180 @@ def render_trophies() -> str:
     return "\n".join(out)
 
 
+# ------------------------------------------------------------------- pets
+
+def food_note(item: str) -> str:
+    spec = FOOD[item]
+    return f"{spec['name']} · +{spec['full']} full, +{spec['joy']} joy"
+
+
+def rarity(species: str) -> str:
+    weight = SPECIES[species]["weight"]
+    return next(name for floor, name in RARITY if weight >= floor)
+
+
+def mood(joy: float) -> str:
+    return next(name for floor, name in MOODS if joy >= floor)
+
+
+def settle(pet: dict, at: "float | None" = None) -> dict:
+    """The pet as it is now: joy and fullness faded by the hours since `at`."""
+    at = time.time() if at is None else at
+    hours = max(0.0, (at - float(pet.get("at") or at)) / 3600)
+    full = max(0.0, float(pet.get("full", 0)) - FULL_FADE * hours)
+    # hungry for part of the time: the joy fades faster for those hours
+    fed_hours = min(hours, max(0.0, (float(pet.get("full", 0)) - HUNGRY) / FULL_FADE))
+    joy = float(pet.get("joy", 0)) - JOY_FADE * fed_hours - 3 * JOY_FADE * (hours - fed_hours)
+    return dict(pet, joy=round(max(0.0, min(100.0, joy)), 1), full=round(min(100.0, full), 1), at=int(at))
+
+
+def find_pet(ref: str) -> "dict | None":
+    """A pet by its number (`2`, `#2`), its name, or its species when only one is that."""
+    pets = wallet()["pets"]
+    key = ref.strip().lstrip("#").lower()
+    if key.isdigit():
+        return next((p for p in pets if p["id"] == int(key)), None)
+    named = [p for p in pets if p.get("name", "").lower() == key]
+    kind = [p for p in pets if p.get("species") == key]
+    return (named or (kind if len(kind) == 1 else [None]))[0]
+
+
+def hatch() -> str:
+    seed = os.environ.get("CLAUDE_QUESTS_SEED")  # tests only: the same egg each time
+    roll = random.Random(seed) if seed else random
+    return roll.choices(list(SPECIES), weights=[s["weight"] for s in SPECIES.values()])[0]
+
+
+def buy_egg() -> str:
+    purse = wallet()
+    if purse["gold"] < EGG_PRICE:
+        return f"Not enough gold: a mystery egg costs {EGG_PRICE} {GOLD} and you have {purse['gold']}."
+    species = hatch()
+    spec = SPECIES[species]
+    pid = max([p["id"] for p in purse["pets"]] + [0]) + 1
+    purse["gold"] -= EGG_PRICE
+    purse["pets"].append({"id": pid, "species": species, "name": spec["default"],
+                          "joy": 70, "full": 70, "at": int(time.time()), "petted": 0})
+    save_wallet(purse)
+    article = "an" if spec["name"][0] in "AEIOU" else "a"
+    return (f"The egg cracks... it's {article} {spec['name']} {spec['emoji']} ({rarity(species)})! "
+            f"Meet {spec['default']}, pet #{pid}. `/quests name {pid} <name>` to rename. "
+            f"{purse['gold']} {GOLD} left.")
+
+
+def buy_food(item: str) -> str:
+    spec = FOOD[item]
+    purse = wallet()
+    if purse["gold"] < spec["price"]:
+        return f"Not enough gold: {spec['name'].lower()} costs {spec['price']} {GOLD} and you have {purse['gold']}."
+    purse["gold"] -= spec["price"]
+    purse["food"][item] = count(purse["food"].get(item)) + 1
+    save_wallet(purse)
+    return (f"Bought {spec['name'].lower()} {spec['emoji']} for {spec['price']} {GOLD}\n"
+            f"×{purse['food'][item]} in your inventory.\n{purse['gold']} {GOLD} left.")
+
+
+def save_pet(pet: dict) -> None:
+    purse = wallet()
+    purse["pets"] = [pet if p["id"] == pet["id"] else p for p in purse["pets"]]
+    save_wallet(purse)
+
+
+def cmd_pets() -> "str | None":
+    return None if wallet()["pets"] else "No pets yet. `/quests buy egg` hatches one."
+
+
+def cmd_name(ref: str, text: str) -> str:
+    pet = find_pet(ref)
+    if not pet:
+        return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+    name = fit(text.strip().strip('"'), PET_NAME_CELLS)
+    if not name:
+        return "A name needs a word or two."
+    old = pet.get("name")
+    save_pet(dict(pet, name=name))
+    return f"{old} is now called {name} {SPECIES[pet['species']]['emoji']}."
+
+
+def cmd_feed(ref: str, item: "str | None") -> str:
+    pet = find_pet(ref)
+    if not pet:
+        return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+    pack = wallet()["food"]
+    spec = SPECIES[pet["species"]]
+    if item:
+        item = item.lower().rstrip("s")
+        if item not in FOOD:
+            return f"No food called '{item}'. The shop sells {', '.join(FOOD)}."
+        if not count(pack.get(item)):
+            return f"No {FOOD[item]['name'].lower()} in your inventory: `/quests buy {item}` ({FOOD[item]['price']} {GOLD})."
+    else:
+        stocked = [f for f in FOOD if count(pack.get(f))]
+        if not stocked:
+            return f"No food in your inventory: `/quests buy kibble` ({FOOD['kibble']['price']} {GOLD}) or see /quests shop."
+        item = spec["likes"] if spec["likes"] in stocked else stocked[0]
+    now_pet = settle(pet)
+    food = FOOD[item]
+    if now_pet["full"] >= 95:
+        return f"{pet['name']} is full and turns up its nose at the {food['name'].lower()}."
+    joy = food["joy"] + (FAVOURITE_JOY if item == spec["likes"] else 0)
+    fed = dict(now_pet, full=min(100.0, now_pet["full"] + food["full"]), joy=min(100.0, now_pet["joy"] + joy))
+    purse = wallet()
+    purse["food"][item] = count(pack.get(item)) - 1
+    purse["pets"] = [fed if p["id"] == pet["id"] else p for p in purse["pets"]]
+    save_wallet(purse)
+    loved = " Its favourite!" if item == spec["likes"] else ""
+    return (f"{pet['name']} wolfs down the {food['name'].lower()} {food['emoji']}.{loved} "
+            f"Now {mood(fed['joy'])}, {round(fed['full'])}% full.")
+
+
+def cmd_pet(ref: str) -> str:
+    pet = find_pet(ref)
+    if not pet:
+        return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+    t = time.time()
+    now_pet = settle(pet, t)
+    tired = t - float(pet.get("petted") or 0) < PET_REST
+    joy = min(100.0, now_pet["joy"] + (PET_TIRED_JOY if tired else PET_JOY))
+    save_pet(dict(now_pet, joy=joy, petted=int(t)))
+    react = {"duck": "squeaks", "frog": "ribbits", "slime": "wobbles", "cat": "purrs", "dog": "wags its tail",
+             "owl": "hoots softly", "axolotl": "wiggles its gills", "fox": "yips", "ghost": "glows",
+             "dragon": "puffs a smoke ring"}.get(pet["species"], "beams")
+    more = ", though it's had a lot of fuss just now" if tired else ""
+    return f"You pet {pet['name']}. It {react}{more}. Now {mood(joy)}."
+
+
+def pet_data(pet: dict) -> dict:
+    now_pet = settle(pet)
+    spec = SPECIES[pet["species"]]
+    return {"id": pet["id"], "species": pet["species"], "kind": spec["name"], "emoji": spec["emoji"],
+            "name": pet.get("name") or spec["default"], "rarity": rarity(pet["species"]),
+            "likes": spec["likes"], "joy": now_pet["joy"], "full": now_pet["full"],
+            "mood": mood(now_pet["joy"]), "hungry": now_pet["full"] < HUNGRY,
+            "petted": int(pet.get("petted") or 0)}
+
+
+def render_pets() -> str:
+    purse = wallet()
+    pack = "  ".join(f"{spec['emoji']} {count(purse['food'].get(item))}" for item, spec in FOOD.items())
+    out = [rule("🐾 THE PEN", f"food {pack}"), ""]
+    for pet in purse["pets"]:
+        d = pet_data(pet)
+        likes = FOOD[d["likes"]]
+        out.append(spread(f"   #{d['id']} {d['emoji']} {fit(d['name'], PET_NAME_CELLS)}",
+                          f"{d['kind']} · {d['rarity']}"))
+        hearts = round(d["joy"] / 10)
+        out.append(spread(f"      joy  {'♥' * hearts}{'♡' * (10 - hearts)}  {d['mood']}",
+                          f"full {meter(d['full'] / 100)}" + (" hungry!" if d["hungry"] else "")))
+        out.append(f"      likes {likes['emoji']} {likes['name'].lower()}")
+        out.append("")
+    if not purse["pets"]:
+        out += [f"   The pen is empty. A mystery egg is {EGG_PRICE} {GOLD} at /quests shop:",
+                "   one of ten creatures hatches from it, a dragon if you're lucky.", ""]
+    out.append(rule("/quests pet <n> · /quests feed <n> [food] · /quests name <n> <name>", "", top=False))
+    return "\n".join(out)
+
+
 def find_plaque(ref: str) -> "dict | None":
     match = re.fullmatch(r"p(\d+)", ref)
     return next((p for p in wallet()["plaques"] if match and p["id"] == int(match.group(1))), None)
@@ -1422,6 +1650,10 @@ def find_plaque(ref: str) -> "dict | None":
 
 def cmd_buy(item: str) -> str:
     item = item.lower()
+    if item in ("egg", "pet", "eggs"):
+        return buy_egg()
+    if item.rstrip("s") in FOOD:
+        return buy_food(item.rstrip("s"))
     if item in ("engrave", "plaque"):
         return f"Plaques are engraved, not bought off the shelf: /quests engrave <quest> ({PLAQUE_PRICE} {GOLD})."
     spec = SHOP.get(item)
@@ -1436,8 +1668,9 @@ def cmd_buy(item: str) -> str:
     purse["owned"].append(item)
     purse["equipped"][spec["slot"]] = item
     save_wallet(purse)
-    note = " Give it words with `/quests banner <text>`." if item == "custom" and not purse.get("banner_text") else ""
-    return f"Bought the {spec['name']} for {spec['price']} {GOLD} and equipped it. {purse['gold']} {GOLD} left.{note}"
+    note = "\nGive it words with `/quests banner <text>`." if item == "custom" and not purse.get("banner_text") else ""
+    return (f"Bought the {spec['name']} {preview(item)} for {spec['price']} {GOLD}\n"
+            f"Equipped, and in your inventory.\n{purse['gold']} {GOLD} left.{note}")
 
 
 def cmd_equip(item: str) -> str:
@@ -1537,6 +1770,11 @@ def armory() -> dict:
         "look": {"bar": list(bar), "trophy": look("trophy"), "banner": look("banner")},
         "wares": wares,
         "plaque_price": PLAQUE_PRICE,
+        "egg_price": EGG_PRICE,
+        "food": [{"id": item, "name": spec["name"], "emoji": spec["emoji"], "price": spec["price"],
+                  "full": spec["full"], "joy": spec["joy"], "stock": count(purse["food"].get(item))}
+                 for item, spec in FOOD.items()],
+        "pets": [pet_data(p) for p in purse["pets"]],
         "plaques": [dict({k: p.get(k) for k in ("id", "title", "outcome", "project", "date", "session", "quest")},
                          shown=p.get("shown", True)) for p in purse["plaques"]],
     }
@@ -1896,6 +2134,16 @@ GOLD, XP AND THE SHOP
   /quests trophies      The hall. `unequip p2` puts a plaque in storage.
   /quests banner <text> Your own words in the header (the custom banner).
 
+PETS
+  /quests buy egg       A mystery egg (1000 💰): one of ten pets hatches,
+                        some rarer than others. Buy as many as you like.
+  /quests pets          The pen: each pet, its joy, how full it is.
+  /quests name 1 Ember  Name pet #1 (or call it by its name after).
+  /quests buy kibble    Food, a portion at a time: kibble, treat, feast.
+  /quests feed 1 treat  Feed #1 (leave out the food for its favourite).
+  /quests pet 1         Free, and it cheers them up. Joy and fullness fade
+                        by the hour, faster when they're hungry.
+
 SETTINGS
   /quests config        Every setting, its value, and what it controls.
   /quests config <k> <v>
@@ -1966,6 +2214,10 @@ USER_COMMANDS = re.compile(
       | (?P<trophies>trophies|hall)
       | engrave \s+ \#?(?P<engrave>\d+)
       | banner \s+ (?P<banner>.+)
+      | (?P<pets>pets|pen)
+      | name \s+ (?P<name_pet>\S+) \s+ (?P<name_text>.+)
+      | feed \s+ (?P<feed>\S+) (?: \s+ (?P<feed_food>\S+) )?
+      | pet \s+ (?P<pet>\S+)
       | (?P<help>help)
     )$""",
     re.IGNORECASE | re.VERBOSE,
@@ -2023,6 +2275,14 @@ def dispatch(raw: str) -> str:
             return cmd_engrave(state, g["engrave"])
         elif g["banner"]:
             return cmd_banner(g["banner"])
+        elif g["pets"]:
+            return render_pets()
+        elif g["name_pet"]:
+            return cmd_name(g["name_pet"], g["name_text"])
+        elif g["feed"]:
+            return cmd_feed(g["feed"], g["feed_food"])
+        elif g["pet"]:
+            return cmd_pet(g["pet"])
         elif g["config"]:
             if g["cfg_key"] and g["cfg_key"].lower() not in SETTINGS:
                 return f"No setting {g['cfg_key']!r}. Settings: {', '.join(SETTINGS)}."
