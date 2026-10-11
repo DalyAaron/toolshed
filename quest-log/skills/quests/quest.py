@@ -2620,18 +2620,16 @@ def upgrade_note() -> "str | None":
 
 
 def release_note(version: str, seen: "str | None") -> "str | None":
-    """The note for `version`; for a patch with none of its own, its minor's
-    (1.4.1 tells someone coming from 1.3 about 1.4.0), unless they'd already
-    seen that minor."""
+    """The note for `version`; for one with none of its own, the newest note
+    they haven't seen (1.4.1 tells someone coming from 1.3 about 1.4.0, and
+    1.6.0 someone coming from 1.4 about 1.5.0), unless they'd seen its minor."""
     if version in UPGRADE_NOTES:
         return UPGRADE_NOTES[version]
-    minor = version.split(".")[:2]
-    if seen and seen.split(".")[:2] == minor:
-        return None
     def key(v: str) -> "list[int]":
         return [int(p) if p.isdigit() else 0 for p in v.split(".")]
-    same = [v for v in UPGRADE_NOTES if v.split(".")[:2] == minor and key(v) <= key(version)]
-    return UPGRADE_NOTES[max(same, key=key)] if same else None
+    unseen = [v for v in UPGRADE_NOTES
+              if key(v) <= key(version) and (not seen or key(v)[:2] > key(seen)[:2])]
+    return UPGRADE_NOTES[max(unseen, key=key)] if unseen else None
 
 
 def session_env(sid: str) -> None:

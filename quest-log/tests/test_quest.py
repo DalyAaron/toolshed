@@ -380,7 +380,11 @@ class SessionStart(QuestTest):
         self.assertEqual(mod.release_note("1.4.1", "1.3.0"), mod.UPGRADE_NOTES["1.4.0"])
         self.assertIsNone(mod.release_note("1.4.1", "1.4.0"))
         self.assertEqual(mod.release_note("1.4.0", "1.4.0"), mod.UPGRADE_NOTES["1.4.0"])
-        self.assertIsNone(mod.release_note("9.9.1", "1.0.0"))
+        # a version with no note in its minor: the newest one they haven't seen
+        newest = max(mod.UPGRADE_NOTES, key=lambda v: [int(p) for p in v.split(".")])
+        self.assertEqual(mod.release_note("9.9.1", "1.0.0"), mod.UPGRADE_NOTES[newest])
+        self.assertEqual(mod.release_note("1.6.0", "1.4.2"), mod.UPGRADE_NOTES["1.5.0"])
+        self.assertIsNone(mod.release_note("1.6.0", "1.5.1"))
 
     def test_upgrade_from_unversioned_install(self):
         """0.1.0 never recorded a version; an existing store marks the upgrade."""
