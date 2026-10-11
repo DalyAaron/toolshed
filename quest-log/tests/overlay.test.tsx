@@ -288,6 +288,36 @@ test('a purse put back after an outside edit is flagged in the header', async ($
   await pane.unmount()
 })
 
+const LADDER = [
+  ['Initiate', 0], ['Apprentice', 175], ['Journeyman', 450], ['Adept', 925], ['Artificer', 1725],
+  ['Enchanter', 2875], ['Sage', 4625], ['Archmage', 6925], ['Grand Archmage', 10375], ['Loremaster', 15000],
+].map(([name, floor]) => ({ name: name as string, floor: floor as number }))
+
+test('ranks: a tab of emblem tiles, reached in colour, yours outlined, the rest greyed', async ($, on) => {
+  const clock = mock.clock(on)
+  const { sell } = world(on, ON)
+  sell(
+    { ...ARMORY, xp: 5110, rank: { name: 'Sage', floor: 4625, next: { name: 'Archmage', floor: 6925 } }, ranks: LADDER },
+    'Done.',
+  )
+  await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+  await pane.press({ key: 'tab-ranks' })
+  expect(await pane.find({ type: 'Text', text: ' · rank 7 of 10' })).toBeDefined()
+  // ten tiles, lowest first; yours in the accent, those ahead dim
+  for (let i = 0; i < 10; i++) expect(await pane.find({ key: `rank-${i}` })).toBeDefined()
+  expect((await pane.find({ key: 'rank-6' }))?.props).toMatchObject({ borderColor: 'claude', width: 14 })
+  expect((await pane.find({ key: 'rank-9' }))?.props.borderDimColor).toBe(true)
+  expect((await pane.find({ key: 'rank-5' }))?.props.borderDimColor).toBe(false)
+  expect(await pane.find({ type: 'Text', text: ' ◆ 4625 xp  ' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: ' 9890 to go ' })).toBeDefined()
+  // a long name takes two lines
+  expect(await pane.find({ type: 'Text', text: '   Grand    ' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '  Archmage  ' })).toBeDefined()
+  await pane.unmount()
+})
+
 test('shop: Buy runs /quests buy through quest.py and shows its answer', async ($, on) => {
   const clock = mock.clock(on)
   const { pressed, sell, toasts } = world(on, ON)

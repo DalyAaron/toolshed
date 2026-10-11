@@ -778,24 +778,47 @@ class Shop(QuestTest):
         self.q("turn-in", "1")
         self.assertEqual(self.purse()["xp"], 40)
         lines = self.quests().splitlines()
-        self.assertTrue(lines[1].startswith(" 🏅 APPRENTICE · 40 xp"), lines[1])
-        self.assertTrue(lines[1].endswith("▰▱▱▱▱▱▱▱ 261 to Journeyman"), lines[1])
+        self.assertTrue(lines[1].startswith(" 🏅 INITIATE · 40 xp"), lines[1])
+        self.assertTrue(lines[1].endswith("▰▰▱▱▱▱▱▱ 135 to Apprentice"), lines[1])
         self.assertEqual(SessionStart.module(self).cells(lines[1]), SessionStart.module(self).WIDTH)
 
     def test_rank_up_is_toasted_and_top_rank_is_max(self):
-        self.fund(0, xp=295)
+        self.fund(0, xp=170)
         self.start()
         self.q("check", "1.1")
-        self.assertIn("🏅 Rank up: Journeyman", json.dumps(self.state()["toasts"], ensure_ascii=False))
+        self.assertIn("🏅 Rank up: Apprentice", json.dumps(self.state()["toasts"], ensure_ascii=False))
         self.fund(0, xp=5000)
-        self.assertIn("ARCHMAGE · 5000 xp", self.quests())
+        self.assertIn("SAGE · 5000 xp", self.quests())
+        self.fund(0, xp=20000)
+        self.assertIn("LOREMASTER · 20000 xp", self.quests())
         self.assertIn("▰▰▰▰▰▰▰▰ max rank", self.quests())
+
+    def test_ten_ranks_up_to_loremaster(self):
+        mod = SessionStart.module(self)
+        self.assertEqual([name for name, _ in mod.RANKS],
+                         ["Initiate", "Apprentice", "Journeyman", "Adept", "Artificer", "Enchanter",
+                          "Sage", "Archmage", "Grand Archmage", "Loremaster"])
+        self.assertEqual([floor for _, floor in mod.RANKS],
+                         [0, 175, 450, 925, 1725, 2875, 4625, 6925, 10375, 15000])
+        self.fund(0, xp=5110)
+        ladder = self.quests("ranks")
+        self.assertIn("🏅 RANKS", ladder)
+        self.assertRegex(ladder, r"◆  7\. Sage +4625 xp +▰▰▱▱▱▱▱▱ 1815 to Archmage")
+        self.assertRegex(ladder, r"✔  6\. Enchanter +2875 xp +reached")
+        self.assertRegex(ladder, r"○ 10\. Loremaster +15000 xp +9890 to go")
+        self.assertLess(ladder.index("Loremaster"), ladder.index("Initiate"))  # the top of the ladder first
+        self.assertEqual({mod.cells(l) for l in ladder.splitlines() if " xp " in l}, {mod.WIDTH})
+        self.assertEqual(json.loads(self.q("armory"))["ranks"][9], {"name": "Loremaster", "floor": 15000})
+        # every rank has its emblem in the overlay
+        src = (PLUGIN / "hooks" / "ranks.ts").read_text()
+        for name, _ in mod.RANKS:
+            self.assertRegex(src, r"\n  '?%s'?: \{" % re.escape(name))
 
     def test_old_purse_gets_xp_for_its_gold(self):
         path = self.tmp / "quests" / "wallet.json"
         path.parent.mkdir(parents=True)
         path.write_text('{"gold": 6}')
-        self.assertIn("APPRENTICE · 60 xp", self.quests())
+        self.assertIn("INITIATE · 60 xp", self.quests())
 
     def test_armory_is_the_shop_as_data(self):
         """What the overlay draws its shop, inventory and hall from."""
@@ -803,8 +826,8 @@ class Shop(QuestTest):
         self.quests("buy double")
         data = json.loads(self.q("armory"))
         self.assertEqual((data["gold"], data["xp"]), (2, 320))
-        self.assertEqual(data["rank"], {"name": "Journeyman", "floor": 301,
-                                        "next": {"name": "Artificer", "floor": 1001}})
+        self.assertEqual(data["rank"], {"name": "Apprentice", "floor": 175,
+                                        "next": {"name": "Journeyman", "floor": 450}})
         self.assertEqual(data["look"], {"bar": ["●", "○"], "trophy": "🏆", "banner": None})
         wares = {w["id"]: w for w in data["wares"]}
         self.assertEqual(list(wares), list(SessionStart.module(self).SHOP))
@@ -998,7 +1021,7 @@ class Shop(QuestTest):
         self.q("check", "1.1")
         self.q("turn-in", "1")
         log = self.quests()
-        self.assertIn("●○○○○○○○ 271 to Journeyman", log)
+        self.assertIn("●○○○○○○○ 145 to Apprentice", log)
         self.assertIn(" 👑 COMPLETED (1)", log)
         inv = self.quests("inventory")
         self.assertIn("◆ beads", inv)

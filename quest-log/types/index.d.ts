@@ -70,6 +70,8 @@ export type Armory = {
   gold: number
   xp: number
   rank: { name: string; floor: number; next: { name: string; floor: number } | null }
+  // the whole ladder, lowest first; absent from a quest.py older than ten ranks
+  ranks?: { name: string; floor: number }[]
   look: { bar: [string, string]; trophy: string; banner: string | null }
   wares: Ware[]
   plaque_price: number
@@ -86,7 +88,7 @@ export type Armory = {
   boost_times?: number
   tampered?: boolean
 }
-export type View = 'log' | 'shop' | 'inventory' | 'trophies' | 'pets'
+export type View = 'log' | 'shop' | 'inventory' | 'trophies' | 'pets' | 'ranks'
 
 declare module 'claude-code' {
   interface PluginState {

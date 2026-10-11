@@ -90,6 +90,12 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.7.0": (
+        "/quests 1.7.0 — ten ranks now,\n"
+        "Initiate to Loremaster at 15000 xp, so yours may have a new name.\n"
+        "`/quests ranks` shows the ladder; the overlay has a Ranks tab\n"
+        "with a pixel emblem for each."
+    ),
     "1.5.0": (
         "/quests 1.5.0 — potions and a new shop.\n"
         "🔴 health heals every pet, 🟢 5x xp and 🟡 5x gold for an hour:\n"
@@ -196,7 +202,9 @@ def write_json(path: Path, data: dict) -> None:
 GOLD = "💰"
 GOLD_OBJECTIVE, GOLD_QUEST = 1, 2
 XP_OBJECTIVE, XP_QUEST = 10, 20
-RANKS = (("Apprentice", 0), ("Journeyman", 301), ("Artificer", 1001), ("Archmage", 2001))
+RANKS = (("Initiate", 0), ("Apprentice", 175), ("Journeyman", 450), ("Adept", 925), ("Artificer", 1725),
+         ("Enchanter", 2875), ("Sage", 4625), ("Archmage", 6925), ("Grand Archmage", 10375),
+         ("Loremaster", 15000))
 PLAQUE_PRICE = 3
 BANNER_CELLS = 24  # a custom banner has to share the header with the project
 
@@ -1573,6 +1581,23 @@ def render_inventory() -> str:
     return "\n".join(out)
 
 
+def render_ranks() -> str:
+    xp = wallet()["xp"]
+    name, floor, up = rank(xp)
+    out = [rule("🏅 RANKS", f"{xp} xp"), ""]
+    for i, (title, start) in reversed(list(enumerate(RANKS))):
+        if title == name:
+            right = (meter((xp - floor) / (up[1] - floor)) + f" {up[1] - xp} to {up[0]}") if up else "max rank"
+            out.append(spread(f"   ◆ {i + 1:>2}. {title}".ljust(30) + f"{start:>6} xp", right))
+        elif xp >= start:
+            out.append(spread(f"   ✔ {i + 1:>2}. {title}".ljust(30) + f"{start:>6} xp", "reached"))
+        else:
+            out.append(spread(f"   ○ {i + 1:>2}. {title}".ljust(30) + f"{start:>6} xp", f"{start - xp} to go"))
+    out.append("")
+    out.append(rule("objectives pay 10 xp, quests 20", "", top=False))
+    return "\n".join(out)
+
+
 def render_trophies() -> str:
     plaques = wallet()["plaques"]
     shown = [p for p in plaques if p.get("shown", True)]
@@ -1992,6 +2017,7 @@ def armory() -> dict:
         "tampered": bool(tamper_line()),
         "rank": {"name": name, "floor": floor,
                  "next": {"name": up[0], "floor": up[1]} if up else None},
+        "ranks": [{"name": title, "floor": start} for title, start in RANKS],
         "look": {"bar": list(bar), "trophy": look("trophy"), "banner": look("banner")},
         "wares": wares,
         "plaque_price": PLAQUE_PRICE,
@@ -2355,7 +2381,7 @@ SHARE
 GOLD, XP AND THE SHOP
   Each objective Claude checks off pays 1 💰 and 10 xp; each quest turned in
   pays 2 💰 and 20 xp. Both follow you across sessions and repos. XP sets your
-  rank: Apprentice, Journeyman (301), Artificer (1001), Archmage (2001).
+  rank, ten of them from Initiate to Loremaster (15000): `/quests ranks`.
   /quests shop          Trinkets and Tronkets: frames, bars, trophies, banners.
   /quests buy double    Buy an item once; it's equipped straight away.
   /quests inventory     What you own, what's equipped, and your plaques.
@@ -2363,6 +2389,7 @@ GOLD, XP AND THE SHOP
                         goes back to how you started.
   /quests engrave 3     Hang turned-in quest #3 in the hall as a plaque.
   /quests trophies      The hall. `unequip p2` puts a plaque in storage.
+  /quests ranks         The ten ranks, where you stand and what's next.
   /quests banner <text> Your own words in the header (the custom banner).
 
 PETS
@@ -2452,6 +2479,7 @@ USER_COMMANDS = re.compile(
       | equip \s+ (?P<equip>\S+)
       | unequip \s+ (?P<unequip>\S+)
       | (?P<trophies>trophies|hall)
+      | (?P<ranks>ranks|rank)
       | engrave \s+ \#?(?P<engrave>\d+)
       | banner \s+ (?P<banner>.+)
       | (?P<pets>pets|pen)
@@ -2513,6 +2541,8 @@ def dispatch(raw: str) -> str:
             return cmd_unequip(g["unequip"])
         elif g["trophies"]:
             return render_trophies()
+        elif g["ranks"]:
+            return render_ranks()
         elif g["engrave"]:
             return cmd_engrave(state, g["engrave"])
         elif g["banner"]:

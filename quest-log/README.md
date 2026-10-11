@@ -185,8 +185,11 @@ between them.
 `/quests engrave <n>` hangs a turned-in quest in `/quests trophies` as a
 plaque, for 3 💰. Plaques stay across repos; unequip one to put it in storage.
 
-Ranks come from XP, which is never spent: Apprentice (0–300), Journeyman
-(301–1000), Artificer (1001–2000), Archmage (2001+).
+Ranks come from XP, which is never spent. There are ten, each with its own
+pixel emblem in the overlay's Ranks tab (or `/quests ranks`): Initiate (0),
+Apprentice (175), Journeyman (450), Adept (925), Artificer (1,725), Enchanter
+(2,875), Sage (4,625), Archmage (6,925), Grand Archmage (10,375) and
+Loremaster (15,000).
 
 ### Pets
 
@@ -269,7 +272,7 @@ nothing to split or install:
 - **A band above the prompt** while a quest is waiting on you, with its
   question, so you don't miss it if the pane is closed.
 - **The shop, your inventory, the hall and your pets**, as tabs in the pane
-  (Log · Shop · Inventory · Trophies · Pets, or `/quest-pane shop`). The
+  (Log · Shop · Inventory · Trophies · Pets · Ranks, or `/quest-pane shop`). The
   shop is a grid of tiles, each a pixel picture of the thing with its name
   and price; click a tile to buy it, or to equip a look you own. The
   buttons do what the `/quests` commands do: **Buy** and **Equip** in the
@@ -350,6 +353,16 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 for how it works and what's still open.
 
 ## Changelog
+
+### 1.7.0
+
+- **Ten ranks.** Initiate (0), Apprentice (175), Journeyman (450), Adept
+  (925), Artificer (1,725), Enchanter (2,875), Sage (4,625), Archmage
+  (6,925), Grand Archmage (10,375) and Loremaster (15,000). Your rank is
+  worked out from your XP, so it may have a new name.
+- **A Ranks tab** in the overlay: a tile per rank with its pixel emblem,
+  reached ones in colour, yours outlined, the rest greyed with the XP to go.
+  `/quests ranks` lists the ladder.
 
 ### 1.5.1
 

@@ -4,6 +4,7 @@ import type { Elements, EngineInterface, Register, RenderChildren, RenderSurface
 import type { Armory, Food, Pet, Plaque, Potion, Quest, QuestLog, Toast, View, Ware } from '../types'
 import { PET_COLUMNS, PET_ROWS, REVEAL_SECONDS, petFrame } from './pets'
 import { WARE_PIXELS, wareArt } from './wares'
+import { EMBLEM_PIXELS, emblem } from './ranks'
 import type { Canvas as Pixels } from './scene'
 import { base64, cells, halfBlocks, shop, svg } from './scene'
 import type { Canvas } from './scene'
@@ -38,6 +39,7 @@ const VIEWS: readonly { view: View; label: string; hotkey: string }[] = [
   { view: 'inventory', label: 'Inventory', hotkey: 'i' },
   { view: 'trophies', label: 'Trophies', hotkey: 't' },
   { view: 'pets', label: 'Pets', hotkey: 'p' },
+  { view: 'ranks', label: 'Ranks', hotkey: 'r' },
 ]
 
 const log = atom({ plugin: 'quest-log', key: 'log' } as const, null)
@@ -1055,6 +1057,73 @@ function plaqueCard(els: Els, p: Plaque) {
   )
 }
 
+// The ladder: where you stand (the header above has how far to the next),
+// then a tile per rank, lowest first, each its emblem over its name and where
+// it starts. Reached ones in colour, yours outlined in the accent, the rest
+// greyed.
+function ranksView(els: Els, gear: Armory) {
+  const { Box, Text, Svg, Raster } = els
+  const ladder = gear.ranks ?? []
+  const at = ladder.findIndex(r => r.name === gear.rank.name)
+  const next = gear.rank.next
+  return (
+    <Box flexDirection="column">
+      <Text wrap="wrap">
+        <Text bold color="claude">
+          🏅 {gear.rank.name}
+        </Text>
+        <Text dimColor>
+          {at >= 0 ? ` · rank ${at + 1} of ${ladder.length}` : ''}
+          {next ? '' : ' · the top of the ladder'}
+        </Text>
+      </Text>
+      <Box flexWrap="wrap" columnGap={1} marginTop={1}>
+        {ladder.map((r, i) => {
+          const state = i === at ? 'current' : gear.xp >= r.floor ? 'reached' : 'locked'
+          const art = emblem(r.name, state === 'locked')
+          const [first, ...rest] = r.name.length > EMBLEM_PIXELS ? r.name.split(' ') : [r.name]
+          const words = [first ?? '', rest.join(' ')]
+          const foot = state === 'locked' ? `${r.floor - gear.xp} to go` : `${r.floor} xp`
+          const tone =
+            state === 'current' ? { color: 'claude' as const, bold: true } : state === 'reached' ? {} : { dimColor: true }
+          const lines = [
+            ...words.map((w, j) => (
+              <Text key={`rank-${i}-w${j}`} {...tone}>
+                {centered(w, EMBLEM_PIXELS)}
+              </Text>
+            )),
+            <Text key={`rank-${i}-foot`} color={state === 'reached' ? 'success' : undefined} dimColor={state !== 'current'}>
+              {centered(state === 'reached' ? `✔ ${foot}` : state === 'current' ? `◆ ${foot}` : foot, EMBLEM_PIXELS)}
+            </Text>,
+          ]
+          const border = {
+            key: `rank-${i}`,
+            flexDirection: 'column' as const,
+            flexShrink: 0,
+            borderStyle: 'round',
+            borderColor: state === 'current' ? ('claude' as const) : undefined,
+            borderDimColor: state === 'locked',
+          }
+          if (Raster) {
+            // a terminal: the emblem as Text, in the same cells as a shop tile
+            return (
+              <Box {...border} width={EMBLEM_PIXELS + 2}>
+                <Text>{[...pixelText(els, `emblem-${i}`, art), ...lines.flatMap(l => ['\n', l])]}</Text>
+              </Box>
+            )
+          }
+          return (
+            <Box {...border} alignItems="center" paddingX={1}>
+              {Svg && art && <Svg source={svg(art, 4)} alt={`${r.name} emblem`} />}
+              {lines}
+            </Box>
+          )
+        })}
+      </Box>
+    </Box>
+  )
+}
+
 function trophiesView($: EngineInterface, els: Els, gear: Armory, state: QuestLog | null, sid: string) {
   const { Box, Text, Button } = els
   const onWall = gear.plaques.filter(p => p.shown)
@@ -1099,8 +1168,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'quest-pane',
-      description: 'Open or close the live quest log pane, or open it on a page: log, shop, inventory, trophies',
-      argumentHint: '[log | shop | inventory | trophies]',
+      description: 'Open or close the live quest log pane, or open it on a page: log, shop, inventory, trophies, pets, ranks',
+      argumentHint: '[log | shop | inventory | trophies | pets | ranks]',
     })
     await refresh($)
     $.clock.every(POLL_MS, () => void refresh($))
@@ -1167,6 +1236,7 @@ export const register: Register = on => {
     else if (page === 'pets' && gear) body = petsView($, els, gear, e.surface)
     else if (page === 'inventory' && gear) body = inventoryView($, els, gear)
     else if (page === 'trophies' && gear) body = trophiesView($, els, gear, state, await $.session.id())
+    else if (page === 'ranks' && gear) body = ranksView(els, gear)
     else body = logView(els, state, gear)
     if (e.surface === 'terminal' && moving.size > 0) startClock($)
 
