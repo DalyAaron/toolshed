@@ -216,6 +216,8 @@ export type PetPose = {
 export const HATCH_SECONDS = 4
 const WOBBLE_UNTIL = 1.2
 const CRACK_UNTIL = 2.4
+// when the shell gives and you see what's inside
+export const REVEAL_SECONDS = CRACK_UNTIL
 const LID_UNTIL = 2.9
 const SHELL = 0xf4ead0
 const SHELL_SHADE = 0xd9cba6

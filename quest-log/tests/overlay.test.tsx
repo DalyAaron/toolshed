@@ -471,7 +471,7 @@ const PETS: Armory = {
 test('shop: sells the mystery egg and food, a portion at a time', async ($, on) => {
   const clock = mock.clock(on)
   const { pressed, sell, toasts } = world(on, ON)
-  sell(PETS, "The egg cracks... it's an Axolotl 🦎 (uncommon)! Meet Bubbles, pet #2. `/quests name 2 <name>` to rename. 999 💰 left.")
+  sell(PETS, 'Bought a mystery egg 🥚 for 1000 💰\nHatch the egg in your pen: `/quests hatch 3`.\n999 💰 left.')
   await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
   await clock.advance(0)
 
@@ -481,10 +481,8 @@ test('shop: sells the mystery egg and food, a portion at a time', async ($, on) 
     expect(await pane.find({ key: 'buy-egg' })).toBeDefined()
     expect(await pane.find({ text: /×2 1 💰/ })).toBeDefined() // kibble in the inventory
     await pane.press({ key: 'buy-egg' })
-    // laid out for a toast's three lines, and the pane goes to watch it hatch
-    expect(toasts.at(-1)).toBe("The egg cracks... it's an Axolotl 🦎\n(uncommon)! Meet Bubbles, pet #2.\nWatch it hatch in the Pets tab!")
-    expect((await findButton(pane, 'tab-pets'))?.props.variant).toBe('primary')
-    await pane.press({ key: 'tab-shop' })
+    // what's inside is the hatching's to say
+    expect(toasts.at(-1)).toBe('Bought a mystery egg 🥚\nHatch the egg in your Pets tab!\n999 💰 left.')
     await pane.press({ key: 'buy-kibble' })
     await pane.unmount()
   }
@@ -523,35 +521,70 @@ test('pets: each moves on a terminal, and is petted, fed and named from its card
   await pane.unmount()
 })
 
-test('pets: a new pet hatches from a pixel egg where it is first seen, then moves as itself', async ($, on) => {
+const EGG: Pet = {
+  id: 3, egg: true, species: 'egg', kind: 'Mystery egg', emoji: '🥚', name: 'Unhatched egg', rarity: 'common',
+  likes: '', joy: 0, full: 0, mood: '', hungry: false, petted: 0,
+}
+const BUBBLES: Pet = { ...PET, id: 3, species: 'axolotl', kind: 'Axolotl', emoji: '🦎', name: 'Bubbles', hungry: false, full: 70, joy: 70 }
+const HATCH_SAID = "The egg cracks... it's an Axolotl 🦎 (uncommon)! Meet Bubbles, pet #3. `/quests name 3 <name>` to rename."
+const EGG_CELLS = base64(cells(petFrame('axolotl', 0, { joy: 70, hungry: false, sincePetted: -1, sinceHatched: 0 }, 3)))
+
+test('pets: an egg waits in the pen; pressing it hatches it, and what it is shows when the shell gives', async ($, on) => {
   const clock = mock.clock(on)
-  const { sell } = world(on, ON)
-  sell(PETS, 'Done.')
+  const { pressed, sell, toasts } = world(on, ON)
+  sell({ ...PETS, pets: [...PETS.pets!, EGG] }, 'Done.')
   await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
   await clock.advance(0)
   const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
   await pane.press({ key: 'tab-pets' })
 
-  const bubbles: Pet = { ...PET, id: 3, species: 'axolotl', kind: 'Axolotl', emoji: '🦎', name: 'Bubbles', hungry: false, full: 70, joy: 70 }
-  const pose = { joy: 70, hungry: false, sincePetted: -1 }
-  const egg = base64(cells(petFrame('axolotl', 0, { ...pose, sinceHatched: 0 }, 3)))
-  // the pets already in the pen when the overlay started are not new
-  expect((await pane.find({ key: 'sprite-1' }))?.props.cells).not.toBe(base64(cells(petFrame('fox', 0, { ...pose, sinceHatched: 0 }, 1))))
+  // the egg on top, its picture the press, nothing to tend and nothing given away
+  expect((await findButton(pane, 'hatch-3-egg'))?.props).toMatchObject({ label: 'Hatch egg #3', plain: true })
+  expect((await findButton(pane, 'hatch-3'))?.props.label).toBe('Hatch')
+  expect(await pane.find({ type: 'Text', text: 'Unhatched egg' })).toBeDefined()
+  expect(await findButton(pane, 'pet-3-pet')).toBeUndefined()
+  expect(await pane.find({ key: 'sprite-3' })).toBeUndefined()
 
-  // bought by /quests buy egg, outside the pane: an egg, sitting still, at first sight
-  sell({ ...PETS, pets: [...PETS.pets!, bubbles] }, 'Done.')
-  await clock.advance(750)
-  expect((await pane.find({ key: 'sprite-3' }))?.props.cells).toBe(egg)
-  // newest on top, where the hatch can't be missed
+  sell({ ...PETS, pets: [...PETS.pets!, BUBBLES] }, HATCH_SAID)
+  await pane.press({ key: 'hatch-3-egg' })
+  expect(pressed.map(p => p.command)).toEqual(['hatch 3'])
+  // cracking: the egg's details still, and no toast yet
+  expect((await pane.find({ key: 'sprite-3' }))?.props.cells).toBe(EGG_CELLS)
   expect((await pane.findAll({ type: 'Raster' })).map(r => r.props.key)).toEqual(['sprite-3', 'sprite-2', 'sprite-1'])
-  // and once it's hatched, the axolotl and no shell
+  expect(await pane.find({ type: 'Text', text: "It's hatching!" })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Bubbles' })).toBeUndefined()
+  expect(toasts.filter(t => t.startsWith('The egg cracks'))).toEqual([])
+
+  // the shell gives: the toast, and its details beside it
+  await clock.advance(2500)
+  expect(toasts.at(-1)).toBe("The egg cracks... it's an Axolotl 🦎\n(uncommon)! Meet Bubbles, pet #3.\nRename it from its card.")
+  expect(await pane.find({ type: 'Text', text: 'Bubbles' })).toBeDefined()
+  expect(await findButton(pane, 'pet-3-pet')).toBeDefined()
   await clock.advance((HATCH_SECONDS + 0.5) * 1000)
-  const later = await pane.find({ key: 'sprite-3' })
-  expect(later).toBeDefined()
   await pane.unmount()
   const again = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
-  expect((await again.find({ key: 'sprite-3' }))?.props.cells).not.toBe(egg)
+  expect((await again.find({ key: 'sprite-3' }))?.props.cells).not.toBe(EGG_CELLS)
   await again.unmount()
+})
+
+test('pets: an egg hatched by /quests hatch plays out where it is first seen', async ($, on) => {
+  const clock = mock.clock(on)
+  const { sell } = world(on, ON)
+  sell({ ...PETS, pets: [...PETS.pets!, EGG] }, 'Done.')
+  await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+  await pane.press({ key: 'tab-pets' })
+  // the pets already in the pen when the overlay started are not new
+  expect((await pane.find({ key: 'sprite-1' }))?.props.cells).not.toBe(
+    base64(cells(petFrame('fox', 0, { joy: 72, hungry: true, sincePetted: -1, sinceHatched: 0 }, 1))),
+  )
+  sell({ ...PETS, pets: [...PETS.pets!, BUBBLES] }, 'Done.')
+  await clock.advance(750)
+  expect((await pane.find({ key: 'sprite-3' }))?.props.cells).toBe(EGG_CELLS)
+  // the prompt already said what it is: no veil
+  expect(await pane.find({ type: 'Text', text: 'Bubbles' })).toBeDefined()
+  await pane.unmount()
 })
 
 test('pets: the hatch is an egg that cracks, a lid that flies, then the pet', () => {

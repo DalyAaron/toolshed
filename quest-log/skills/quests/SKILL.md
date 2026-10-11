@@ -73,7 +73,7 @@ nothing more needs asking.
 ### `Bought` / `Equipped` / `Unequipped` / `Engraved` / `Banner set` / `The egg cracks` / `… is now called` / `… wolfs down` / `You pet` / `You drink` / `You uncork` — the user spent gold, changed their look, tended a pet or drank a potion
 
 One line confirming it. Gold, cosmetics, potions and pets are the user's: never
-buy, equip, engrave, drink, feed, name or pet anything yourself. A newly hatched pet is
+buy, equip, engrave, drink, hatch, feed, name or pet anything yourself. A newly hatched pet is
 worth a word of welcome, by its name.
 
 ### `UNKNOWN:` / `No quest` / `Nothing to adopt` / anything else — a miss

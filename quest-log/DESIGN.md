@@ -433,14 +433,19 @@ repainted by `$.ui.blit`, and the clock stops when nothing is taken.
 A pet that hatches while the overlay watches comes out of an egg first: four
 seconds in its sprite's place (`hatchFrame` in pets.ts) of the egg wobbling,
 cracking left to right, its lid flying off with the pet peeking out, and the
-bottom half dropping away in a burst of sparkles. A new pet is one in the
-armory that wasn't at the last read, so `/quests buy egg` at the prompt
-hatches it too; the pets there at the overlay's first read are old friends.
-The hatch starts when the pet's card is first drawn, not when it was bought,
-so it isn't missed on another tab, and an egg bought from the Shop switches
-the pane to Pets to watch it. The pen lists the newest pet first (in the
-overlay and `/quests pets`), so a hatch is at the top, not below the fold. Terminal only: elsewhere the still picture is
-the pet.
+bottom half dropping away in a burst of sparkles. A bought egg is a pet with
+`egg: true` and no species: `hatch()` rolls one only at `/quests hatch`, so
+neither the buy's words nor the wallet can spoil it. In the Pets tab the egg's
+card is its picture as one press (the shop tiles' half-block `Text` in a
+plain `Button`) and a Hatch button. A pet that was an egg at the last read,
+or wasn't there at all, hatches where it's next drawn; the pets there at the
+overlay's first read are old friends. The hatch starts when the card is first
+drawn, so it isn't missed on another tab. Hatched from the pane, the card
+keeps the egg's details and the toast saying what it is waits
+(`$.clock.after(REVEAL_SECONDS)`) until the shell gives; hatched at the
+prompt, the prompt already said, so nothing waits. The pen lists the newest pet first (in the
+overlay and `/quests pets`), so a hatch is at the top, not below the fold.
+Terminal only: elsewhere the still picture is the pet.
 
 ## /todo handoff
 

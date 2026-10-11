@@ -1586,21 +1586,50 @@ def hatch() -> str:
     return roll.choices(list(SPECIES), weights=[s["weight"] for s in SPECIES.values()])[0]
 
 
+# An egg goes into the pen unhatched, a pet with no species yet: what's inside
+# is rolled when it's hatched, so nothing (the wallet included) can tell early.
+EGG_NAME = "Unhatched egg"
+
+
 def buy_egg() -> str:
     purse = wallet()
     if purse["gold"] < EGG_PRICE:
         return f"Not enough gold: a mystery egg costs {EGG_PRICE} {GOLD} and you have {purse['gold']}."
-    species = hatch()
-    spec = SPECIES[species]
     pid = max([p["id"] for p in purse["pets"]] + [0]) + 1
     purse["gold"] -= EGG_PRICE
-    purse["pets"].append({"id": pid, "species": species, "name": spec["default"],
-                          "joy": 70, "full": 70, "at": int(time.time()), "petted": 0})
+    purse["pets"].append({"id": pid, "egg": True, "at": int(time.time())})
     save_wallet(purse)
+    return (f"Bought a mystery egg 🥚 for {EGG_PRICE} {GOLD}\n"
+            f"Hatch the egg in your pen: `/quests hatch {pid}`.\n{purse['gold']} {GOLD} left.")
+
+
+def cmd_hatch(ref: "str | None") -> str:
+    eggs = [p for p in wallet()["pets"] if p.get("egg")]
+    if ref:
+        egg = find_pet(ref)
+        if not egg:
+            return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+        if not egg.get("egg"):
+            return f"{egg.get('name')} hatched already."
+    elif eggs:
+        egg = eggs[0]  # the one waiting longest
+    else:
+        return f"No eggs to hatch. A mystery egg is {EGG_PRICE} {GOLD} at /quests shop."
+    species = hatch()
+    spec = SPECIES[species]
+    pid = egg["id"]
+    save_pet({"id": pid, "species": species, "name": spec["default"],
+              "joy": 70, "full": 70, "at": int(time.time()), "petted": 0})
     article = "an" if spec["name"][0] in "AEIOU" else "a"
     return (f"The egg cracks... it's {article} {spec['name']} {spec['emoji']} ({rarity(species)})! "
-            f"Meet {spec['default']}, pet #{pid}. `/quests name {pid} <name>` to rename. "
-            f"{purse['gold']} {GOLD} left.")
+            f"Meet {spec['default']}, pet #{pid}. `/quests name {pid} <name>` to rename.")
+
+
+def still_egg(pet: dict) -> "str | None":
+    """What tending an egg says: it has to hatch first."""
+    if pet.get("egg"):
+        return f"#{pet['id']} is still an egg. `/quests hatch {pet['id']}` first."
+    return None
 
 
 def buy_food(item: str) -> str:
@@ -1636,10 +1665,10 @@ def cmd_drink(ref: str) -> str:
     if not count(purse["potions"].get(item)):
         return f"No {spec['name'].lower()} in your inventory: `/quests buy {item}` ({spec['price']} {GOLD})."
     if item == "health":
-        if not purse["pets"]:
+        if not any(not p.get("egg") for p in purse["pets"]):
             return f"No pets to heal. The {spec['name'].lower()} keeps for when you have one."
         t = time.time()
-        purse["pets"] = [dict(settle(p, t), joy=100.0, full=100.0) for p in purse["pets"]]
+        purse["pets"] = [p if p.get("egg") else dict(settle(p, t), joy=100.0, full=100.0) for p in purse["pets"]]
         said = f"You uncork the {spec['name'].lower()} {spec['look']}. Every pet is back to full joy and fullness."
     else:
         t = time.time()
@@ -1660,7 +1689,7 @@ def save_pet(pet: dict) -> None:
 
 
 def cmd_pets() -> "str | None":
-    return None if wallet()["pets"] else "No pets yet. `/quests buy egg` hatches one."
+    return None if wallet()["pets"] else "No pets yet. `/quests buy egg`, then hatch it."
 
 
 def cmd_name(ref: str, text: str) -> str:
@@ -1670,6 +1699,8 @@ def cmd_name(ref: str, text: str) -> str:
     name = fit(text.strip().strip('"'), PET_NAME_CELLS)
     if not name:
         return "A name needs a word or two."
+    if still_egg(pet):
+        return still_egg(pet)
     old = pet.get("name")
     save_pet(dict(pet, name=name))
     return f"{old} is now called {name} {SPECIES[pet['species']]['emoji']}."
@@ -1679,6 +1710,8 @@ def cmd_feed(ref: str, item: "str | None") -> str:
     pet = find_pet(ref)
     if not pet:
         return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+    if still_egg(pet):
+        return still_egg(pet)
     pack = wallet()["food"]
     spec = SPECIES[pet["species"]]
     if item:
@@ -1711,6 +1744,8 @@ def cmd_pet(ref: str) -> str:
     pet = find_pet(ref)
     if not pet:
         return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+    if still_egg(pet):
+        return still_egg(pet)
     t = time.time()
     now_pet = settle(pet, t)
     tired = t - float(pet.get("petted") or 0) < PET_REST
@@ -1724,6 +1759,10 @@ def cmd_pet(ref: str) -> str:
 
 
 def pet_data(pet: dict) -> dict:
+    if pet.get("egg"):
+        return {"id": pet["id"], "egg": True, "species": "egg", "kind": "Mystery egg", "emoji": "🥚",
+                "name": EGG_NAME, "rarity": "common", "likes": "", "joy": 0, "full": 0, "mood": "",
+                "hungry": False, "petted": 0}
     now_pet = settle(pet)
     spec = SPECIES[pet["species"]]
     return {"id": pet["id"], "species": pet["species"], "kind": spec["name"], "emoji": spec["emoji"],
@@ -1739,6 +1778,11 @@ def render_pets() -> str:
     out = [rule("🐾 THE PEN", f"food {pack}"), ""]
     for pet in sorted(purse["pets"], key=lambda p: -p["id"]):  # newest first
         d = pet_data(pet)
+        if d.get("egg"):
+            out.append(spread(f"   #{d['id']} 🥚 {EGG_NAME}", "something's moving inside"))
+            out.append(f"      /quests hatch {d['id']}")
+            out.append("")
+            continue
         likes = FOOD[d["likes"]]
         out.append(spread(f"   #{d['id']} {d['emoji']} {fit(d['name'], PET_NAME_CELLS)}",
                           f"{d['kind']} · {d['rarity']}"))
@@ -1750,7 +1794,7 @@ def render_pets() -> str:
     if not purse["pets"]:
         out += [f"   The pen is empty. A mystery egg is {EGG_PRICE} {GOLD} at /quests shop:",
                 "   one of ten creatures hatches from it, a dragon if you're lucky.", ""]
-    out.append(rule("/quests pet <n> · /quests feed <n> [food] · /quests name <n> <name>", "", top=False))
+    out.append(rule("/quests pet <n> · feed <n> [food] · name <n> <name> · hatch <n>", "", top=False))
     return "\n".join(out)
 
 
@@ -2254,8 +2298,9 @@ GOLD, XP AND THE SHOP
   /quests banner <text> Your own words in the header (the custom banner).
 
 PETS
-  /quests buy egg       A mystery egg (1000 💰): one of ten pets hatches,
-                        some rarer than others. Buy as many as you like.
+  /quests buy egg       A mystery egg (1000 💰), into the pen unhatched.
+  /quests hatch 2       Hatch egg #2: one of ten pets, some rarer than
+                        others. Buy as many as you like.
   /quests pets          The pen: each pet, its joy, how full it is.
   /quests name 1 Ember  Name pet #1 (or call it by its name after).
   /quests buy kibble    Food, a portion at a time: kibble, treat, feast.
@@ -2345,6 +2390,7 @@ USER_COMMANDS = re.compile(
       | name \s+ (?P<name_pet>\S+) \s+ (?P<name_text>.+)
       | feed \s+ (?P<feed>\S+) (?: \s+ (?P<feed_food>\S+) )?
       | pet \s+ (?P<pet>\S+)
+      | (?P<hatch>hatch) (?: \s+ (?P<hatch_what>\S+) )?
       | (?:drink|quaff|use) \s+ (?P<drink>\S+)
       | (?P<help>help)
     )$""",
@@ -2413,6 +2459,8 @@ def dispatch(raw: str) -> str:
             return cmd_pet(g["pet"])
         elif g["drink"]:
             return cmd_drink(g["drink"])
+        elif g["hatch"]:
+            return cmd_hatch(g["hatch_what"])
         elif g["config"]:
             if g["cfg_key"] and g["cfg_key"].lower() not in SETTINGS:
                 return f"No setting {g['cfg_key']!r}. Settings: {', '.join(SETTINGS)}."

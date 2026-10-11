@@ -2,8 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderChildren, RenderSurface, TextProps, Timer } from 'claude-code'
 
 import type { Armory, Food, Pet, Plaque, Potion, Quest, QuestLog, Toast, View, Ware } from '../types'
-import { PET_COLUMNS, PET_ROWS, petFrame } from './pets'
+import { PET_COLUMNS, PET_ROWS, REVEAL_SECONDS, petFrame } from './pets'
 import { WARE_PIXELS, wareArt } from './wares'
+import type { Canvas as Pixels } from './scene'
 import { base64, cells, halfBlocks, shop, svg } from './scene'
 import type { Canvas } from './scene'
 
@@ -131,6 +132,10 @@ const pettedAt = new Map<number, number>()
 // drawn, when the egg starts to crack (HATCHING until then)
 const hatchedAt = new Map<number, number>()
 const HATCHING = -1
+// eggs hatched from the pane and not yet out of the shell, with the toast that
+// says what came out: the card keeps the egg's details, and the toast waits,
+// until the shell gives
+const veiled = new Map<number, string>()
 
 // quest.py's store_base(): CLAUDE_QUESTS_DIR, else <config dir>/quests
 async function storeBase($: EngineInterface): Promise<string> {
@@ -202,14 +207,14 @@ async function readArmory($: EngineInterface, base: string): Promise<void> {
   try {
     const next = JSON.parse(await questPy($, ['armory'])) as Armory
     // petted since the last read (from here or from /quests pet): hearts
-    const before = new Map(((await read($, armory))?.pets ?? []).map(p => [p.id, p.petted]))
     const known = await read($, armory)
+    const before = new Map((known?.pets ?? []).map(p => [p.id, p]))
     for (const pet of next.pets ?? []) {
       const was = before.get(pet.id)
-      if (was !== undefined && pet.petted > was) pettedAt.set(pet.id, frame)
-      // new since the last read (from the Shop or /quests buy egg): it hatches
-      // where it's next seen; the pets there at the first read are old friends
-      if (known && was === undefined) hatchedAt.set(pet.id, HATCHING)
+      if (was && pet.petted > was.petted) pettedAt.set(pet.id, frame)
+      // out of its egg since the last read (from here or /quests hatch): it
+      // hatches where it's next seen; the pets there at the first read are old friends
+      if (known && !pet.egg && (!was || was.egg)) hatchedAt.set(pet.id, HATCHING)
     }
     await update($, armory, () => next)
     walletMtime = stamp
@@ -276,30 +281,60 @@ function refresh($: EngineInterface): Promise<void> {
 // rest cut. A hatching is laid out to fit, pointing at the Pets tab where the
 // CLI points at commands; anything else keeps its first three lines.
 const HATCHED = /^The egg cracks\.\.\. (it's an? .+?) \((\w+)\)! Meet (.+?), pet #(\d+)\./
+const BOUGHT_EGG = /^Bought a mystery egg/
 
 function toastOf(said: string): string {
   const hatched = HATCHED.exec(said)
   if (hatched) {
     const [, it, tier, name, id] = hatched
-    return `The egg cracks... ${it}\n(${tier})! Meet ${name}, pet #${id}.\nWatch it hatch in the Pets tab!`
+    return `The egg cracks... ${it}\n(${tier})! Meet ${name}, pet #${id}.\nRename it from its card.`
   }
+  // what's inside is the hatching's to say, so the buy doesn't hint
+  if (BOUGHT_EGG.test(said)) return `Bought a mystery egg 🥚\nHatch the egg in your Pets tab!\n${said.split('\n').at(-1)}`
   return said.split('\n').slice(0, 3).join('\n')
 }
 
-async function press($: EngineInterface, command: string): Promise<void> {
-  let said: string
+async function run($: EngineInterface, command: string): Promise<string> {
   try {
-    said = (await questPy($, ['dispatch', '--stdin'], command)) || 'Done.'
+    return (await questPy($, ['dispatch', '--stdin'], command)) || 'Done.'
   } catch (err) {
-    said = `Couldn't run /quests ${command}: ${err instanceof Error ? err.message : String(err)}`
+    return `Couldn't run /quests ${command}: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    walletMtime = -1
+    mtime = -1
   }
+}
+
+async function press($: EngineInterface, command: string): Promise<void> {
+  const said = await run($, command)
   // a toast, so the pane doesn't jump to make room for it
   $.ui.toast(toastOf(said), { timeoutMs: 8000 })
-  walletMtime = -1
-  mtime = -1
   await refresh($)
-  // an egg bought here hatches in front of you
-  if (HATCHED.test(said)) await show($, 'pets')
+}
+
+// Hatching an egg from its card. On a terminal, where it plays out, the
+// card keeps the egg's details and the toast saying what it is waits until
+// the shell gives; elsewhere the pet is just there.
+async function hatchEgg($: EngineInterface, id: number, surface: string): Promise<void> {
+  const watching = surface === 'terminal'
+  if (watching) veiled.set(id, '')
+  const said = await run($, `hatch ${id}`)
+  if (!watching || !HATCHED.test(said)) {
+    veiled.delete(id)
+    $.ui.toast(toastOf(said), { timeoutMs: 8000 })
+    await refresh($)
+    return
+  }
+  veiled.set(id, toastOf(said))
+  await refresh($)
+  $.clock.after(REVEAL_SECONDS * 1000, () => void reveal($, id))
+}
+
+async function reveal($: EngineInterface, id: number): Promise<void> {
+  const toast = veiled.get(id)
+  veiled.delete(id)
+  if (toast) $.ui.toast(toast, { timeoutMs: 8000 })
+  await update($, armory, a => (a ? { ...a } : a)) // draw the card's details
 }
 
 const seconds = (at: number) => (at * FRAME_MS) / 1000
@@ -666,21 +701,20 @@ function shopTiles(gear: Armory): { head: string; tiles: Tile[] }[] {
 // The picture as Text: on a terminal two pixels a cell, a half block in the
 // top one's colour over the bottom one's, so a Button can hold it and the
 // whole tile is the press.
-function pixelText(els: Els, id: string): RenderChildren[] {
+function pixelText(els: Els, key: string, art: Pixels | null): RenderChildren[] {
   const { Text } = els
-  const art = wareArt(id)
-  if (!art) return [' '.repeat(WARE_PIXELS) + '\n']
+  if (!art) return [' '.repeat(WARE_PIXELS)]
   return halfBlocks(art).flatMap((runs, row) => [
+    ...(row > 0 ? ['\n'] : []),
     ...runs.map((r, i) =>
       r.fg ? (
-        <Text key={`${id}-${row}-${i}`} color={r.fg} backgroundColor={r.bg ?? undefined}>
+        <Text key={`${key}-${row}-${i}`} color={r.fg} backgroundColor={r.bg ?? undefined}>
           {r.glyph.repeat(r.n)}
         </Text>
       ) : (
         ' '.repeat(r.n)
       ),
     ),
-    '\n',
   ])
 }
 
@@ -706,7 +740,7 @@ function tileView($: EngineInterface, els: Els, t: Tile) {
         {centered(t.price, WARE_PIXELS)}
       </Text>,
     ]
-    const face = [...pixelText(els, t.id), ...words]
+    const face = [...pixelText(els, t.id, wareArt(t.id)), '\n', ...words]
     return (
       <Box {...border} width={WARE_PIXELS + 2}>
         {t.command ? (
@@ -763,8 +797,47 @@ const hearts = (joy: number) => {
 }
 
 // One pet: it, moving, beside how it is and what you can do for it.
+// An egg in the pen: its picture is the press that hatches it, a Hatch button
+// beside it too. What's inside isn't known until then, here or in the wallet.
+const STILL_EGG = { joy: 0, hungry: false, sincePetted: -1, sinceHatched: 0 }
+function eggCard($: EngineInterface, els: Els, pet: Pet, surface: string) {
+  const { Box, Text, Button, Svg, TileButton } = els
+  const egg = petFrame('egg', 0, STILL_EGG, pet.id)
+  const hatch = () => hatchEgg($, pet.id, surface)
+  const picture = TileButton ? (
+    <TileButton key={`hatch-${pet.id}-egg`} label={`Hatch egg #${pet.id}`} plain onPress={hatch}>
+      {pixelText(els, `egg-${pet.id}`, egg)}
+    </TileButton>
+  ) : Svg ? (
+    <Svg source={svg(egg)} alt="An unhatched egg" />
+  ) : (
+    <Text>{pet.emoji}</Text>
+  )
+  return (
+    <Box key={`pet-${pet.id}`} columnGap={2} flexWrap="wrap" marginBottom={1}>
+      <Box flexShrink={0}>{picture}</Box>
+      {eggDetails(els, pet, <Button key={`hatch-${pet.id}`} label="Hatch" variant="primary" onPress={hatch} />)}
+    </Box>
+  )
+}
+
+function eggDetails(els: Els, pet: Pet, action: RenderChildren) {
+  const { Box, Text } = els
+  return (
+    <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+      <Text wrap="truncate-end">
+        <Text bold>Unhatched egg</Text>
+        <Text dimColor>{` #${pet.id} · Mystery egg`}</Text>
+      </Text>
+      <Text dimColor>Something's moving inside.</Text>
+      <Box>{action}</Box>
+    </Box>
+  )
+}
+
 function petCard($: EngineInterface, els: Els, pet: Pet, food: Food[], bar: readonly [string, string], surface: string) {
   const { Box, Text, Button, Input, Svg } = els
+  if (pet.egg) return eggCard($, els, pet, surface)
   if (hatchedAt.get(pet.id) === HATCHING && surface === 'terminal') hatchedAt.set(pet.id, frame)
   const hatched = hatchedAt.get(pet.id)
   const pose = (t: number) => ({
@@ -781,6 +854,15 @@ function petCard($: EngineInterface, els: Els, pet: Pet, food: Food[], bar: read
       <Text>{pet.emoji}</Text>
     ))
   const stocked = food.filter(f => f.stock > 0)
+  if (veiled.has(pet.id)) {
+    // coming out of the shell: what it is shows when it does
+    return (
+      <Box key={`pet-${pet.id}`} columnGap={2} flexWrap="wrap" marginBottom={1}>
+        <Box flexShrink={0}>{sprite}</Box>
+        {eggDetails(els, pet, <Text color="claude">It's hatching!</Text>)}
+      </Box>
+    )
+  }
   return (
     <Box key={`pet-${pet.id}`} columnGap={2} flexWrap="wrap" marginBottom={1}>
       <Box flexShrink={0}>{sprite}</Box>

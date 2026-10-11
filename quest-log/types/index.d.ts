@@ -49,6 +49,8 @@ export type Plaque = {
 // last fed or petted. `petted` is when it last was, in epoch seconds.
 export type Pet = {
   id: number
+  // an unhatched egg: no species yet, the rest placeholders
+  egg?: boolean
   species: string
   kind: string
   emoji: string

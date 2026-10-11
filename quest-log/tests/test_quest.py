@@ -816,20 +816,38 @@ class Shop(QuestTest):
         return dict({"id": 1, "species": "cat", "name": "Whiskers", "joy": 50, "full": 50,
                      "at": int(time.time() - hours * 3600), "petted": 0}, **fields)
 
-    def test_an_egg_hatches_one_of_ten_by_weight(self):
-        self.fund(2010)
-        out = self.quests("buy egg", CLAUDE_QUESTS_SEED="7")
-        self.assertRegex(out, r"^The egg cracks\.\.\. it's an? .+ \((common|uncommon|rare|legendary)\)! "
-                              r"Meet \w+, pet #1\. .* 1010 💰 left\.$")
-        again = self.quests("buy egg", CLAUDE_QUESTS_SEED="7")
-        self.assertIn("pet #2", again)
+    def test_an_egg_goes_to_the_pen_unhatched_then_hatches_one_of_ten(self):
+        self.fund(2010, food={"kibble": 1}, potions={"health": 1})
+        out = self.quests("buy egg")
+        # nothing in what it says, or in the wallet, gives the species away
+        self.assertEqual(out, "Bought a mystery egg 🥚 for 1000 💰\n"
+                              "Hatch the egg in your pen: `/quests hatch 1`.\n1010 💰 left.")
+        self.assertEqual(self.purse()["pets"], [{"id": 1, "egg": True, "at": self.purse()["pets"][0]["at"]}])
+        self.quests("buy egg")
         self.assertIn("Not enough gold: a mystery egg costs 1000", self.quests("buy egg"))
+        pen = self.quests("pets")
+        self.assertIn("#2 🥚 Unhatched egg", pen)
+        self.assertIn("/quests hatch 1", pen)
+        data = json.loads(self.q("armory"))["pets"]
+        self.assertEqual([(d["egg"], d["name"]) for d in data], [(True, "Unhatched egg")] * 2)
+        # an egg can't be tended yet
+        for verb in ("pet 1", "feed 1", "name 1 Rex"):
+            self.assertEqual(self.quests(verb), "#1 is still an egg. `/quests hatch 1` first.")
+        self.assertIn("No pets to heal", self.quests("drink health"))
+        # hatching rolls it: the oldest egg when none is named
+        out = self.quests("hatch", CLAUDE_QUESTS_SEED="7")
+        self.assertRegex(out, r"^The egg cracks\.\.\. it's an? .+ \((common|uncommon|rare|legendary)\)! "
+                              r"Meet \w+, pet #1\. `/quests name 1 <name>` to rename\.$")
+        self.assertIn("pet #2", self.quests("hatch 2", CLAUDE_QUESTS_SEED="7"))
+        self.assertIn("hatched already", self.quests("hatch 1"))
+        self.assertIn("No eggs to hatch", self.quests("hatch"))
         pets = self.purse()["pets"]
         mod = SessionStart.module(self)
         self.assertEqual(len(mod.SPECIES), 10)
         self.assertEqual(pets[0]["species"], pets[1]["species"])  # same seed, same egg
         self.assertIn(pets[0]["species"], mod.SPECIES)
         self.assertEqual((pets[0]["joy"], pets[0]["full"]), (70, 70))
+        self.assertNotIn("egg", pets[0])
         # weighted: over many eggs every species turns up, the commonest most
         import collections, random
         random.seed(1)

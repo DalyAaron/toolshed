@@ -191,12 +191,15 @@ Ranks come from XP, which is never spent: Apprentice (0–300), Journeyman
 ### Pets
 
 The shop sells one more thing: a **mystery egg** (`/quests buy egg`, 1000 💰).
-One of ten pets hatches from it, some rarer than others: a rubber duck, a
+It goes into your pen unhatched, and nothing says what's inside until you
+hatch it (`/quests hatch 1`, or click the egg in the overlay's Pets tab).
+One of ten pets comes out, some rarer than others: a rubber duck, a
 frog or a slime is common, an axolotl or a fox uncommon, a ghost rare and a
 dragon a one-in-fifty. Buy as many eggs as you like.
 
 ```
 /quests pets               the pen: each pet, its joy and how full it is
+/quests hatch 1            hatch egg #1 (leave out the number for the oldest)
 /quests name 1 Ember       name pet #1 (then call it by name: /quests pet ember)
 /quests buy kibble         food, a portion at a time: kibble, treat, feast
 /quests feed 1 treat       feed it (leave out the food for its favourite)
@@ -222,7 +225,8 @@ overlay's header. With the overlay on, the Pets tab has a button to drink a
 health potion. With the overlay on, the
 Pets tab draws each pet as a little pixel sprite that bobs, blinks, hops
 when it's happy and sags when it isn't, with hearts when you pet it. A new
-pet hatches there from a pixel egg that wobbles, cracks and splits open.
+egg sits there until you click it; then it wobbles, cracks and splits
+open, and what came out is told as the shell gives.
 
 Claude only earns gold. It never spends it, never tends your pets, and
 nothing in the shop changes how Claude works.
@@ -346,6 +350,14 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 for how it works and what's still open.
 
 ## Changelog
+
+### 1.5.1
+
+- **Eggs hatch when you say.** A bought egg goes into the pen as an
+  Unhatched egg, its species not rolled until it hatches, so the buy no
+  longer gives it away. Click the egg in the overlay's Pets tab (or
+  `/quests hatch <n>`) to hatch it; the toast and the pet's details wait
+  for the shell to give. Eggs can't be fed, petted, named or healed.
 
 ### 1.5.0
 
