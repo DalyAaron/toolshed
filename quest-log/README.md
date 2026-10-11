@@ -177,9 +177,8 @@ of a log that keeps itself. Either:
 ## The shop
 
 `/quests shop` is Trinkets and Tronkets, selling looks for the log: frames
-(double, heavy, ASCII), progress bars (blocks, beads, hearts), a crown
-or gem over completed quests, and banners for the header, including one in
-your own words. Everything is bought once and kept: `/quests inventory` shows
+(double, ASCII), progress bars (blocks, beads, hearts), a crown or gem
+over completed quests, and a banner for the header in your own words. Everything is bought once and kept: `/quests inventory` shows
 what you own, `/quests equip <item>` and `/quests unequip <item>` switch
 between them.
 
@@ -205,9 +204,25 @@ dragon a one-in-fifty. Buy as many eggs as you like.
 ```
 
 Joy and fullness fade by the hour, and a hungry pet gets glum faster. Each
-species has a favourite food that cheers it more. With the overlay on, the
+species has a favourite food that cheers it more.
+
+### Potions
+
+Three potions, bought like food and kept until you drink one:
+
+```
+/quests buy health         🔴 health potion (10 💰): every pet back to full joy and fullness
+/quests buy xp             🟢 XP booster (15 💰): quests pay 5x xp for an hour
+/quests buy luck           🟡 lucky potion (15 💰): quests pay 5x gold for an hour
+/quests drink luck         drink one; another while it's working adds an hour
+```
+
+Boosts working show their minutes left in the shop and inventory, and in the
+overlay's header. With the overlay on, the Pets tab has a button to drink a
+health potion. With the overlay on, the
 Pets tab draws each pet as a little pixel sprite that bobs, blinks, hops
-when it's happy and sags when it isn't, with hearts when you pet it.
+when it's happy and sags when it isn't, with hearts when you pet it. A new
+pet hatches there from a pixel egg that wobbles, cracks and splits open.
 
 Claude only earns gold. It never spends it, never tends your pets, and
 nothing in the shop changes how Claude works.
@@ -251,9 +266,10 @@ nothing to split or install:
   question, so you don't miss it if the pane is closed.
 - **The shop, your inventory, the hall and your pets**, as tabs in the pane
   (Log · Shop · Inventory · Trophies · Pets, or `/quest-pane shop`). The
-  shop's shelves start folded, each header saying what it holds; press one
-  to open it. Their buttons do what the
-  `/quests` commands do: **Buy** and **Equip** in the shop, **Equip**,
+  shop is a grid of tiles, each a pixel picture of the thing with its name
+  and price; click a tile to buy it, or to equip a look you own. The
+  buttons do what the `/quests` commands do: **Buy** and **Equip** in the
+  shop, **Equip**,
   **Unequip**, **Store** and your custom banner's words in the inventory,
   and **Engrave** for this session's finished quests in the hall. Only your
   press spends gold; Claude never does. The log tab wears what you've
@@ -330,6 +346,24 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 for how it works and what's still open.
 
 ## Changelog
+
+### 1.5.0
+
+- **Potions.** 🔴 a health potion (10 💰) fills every pet's joy and
+  fullness; 🟢 an XP booster and 🟡 a lucky potion (15 💰 each) make
+  objectives and quests pay 5x xp or 5x gold for an hour. Bought like food,
+  used with `/quests drink <potion>`; another while one works adds an hour.
+  Working boosts count down in the shop, the inventory and the overlay.
+- **A shop of tiles.** The overlay's shop is a grid of 12-pixel pictures,
+  one tile per ware with its name and price; click a tile to buy it or
+  equip it. The Heavy frame and the preset banners are gone: the one banner
+  is your own words.
+- **Hatching.** A new pet hatches in the Pets tab from a pixel egg that
+  wobbles, cracks and splits open, wherever it was bought; an egg bought in
+  the Shop takes you there. The pen lists the newest pet first.
+- **`/resume` inside a session** now points `quest` at the resumed session.
+  Claude Code keeps `CLAUDE_CODE_SESSION_ID` on the session the process
+  started as, so the SessionStart hook exports `CLAUDE_QUESTS_SESSION_ID`.
 
 ### 1.4.2
 

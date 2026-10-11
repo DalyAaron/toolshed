@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -325,8 +326,9 @@ class SessionStart(QuestTest):
         for source in ("startup", "compact"):
             self.hook("session-start", {"source": source}, CLAUDE_ENV_FILE=str(env_file))
         lines = env_file.read_text().splitlines()
-        self.assertEqual(len(lines), 1)
+        self.assertEqual(len(lines), 2)
         self.assertRegex(lines[0], r'^export PATH=\S*/skills/quests/bin:"\$PATH"$')
+        self.assertEqual(lines[1], "export CLAUDE_QUESTS_SESSION_ID=" + self.sid)
         self.assertFalse((PLUGIN / "bin").exists())
         # what a later Bash command gets: `quest` runs the CLI
         out = subprocess.run(["sh", "-c", '. "$0" && command -v quest && quest ack', str(env_file)],
@@ -337,6 +339,29 @@ class SessionStart(QuestTest):
         # no env file (an older Claude Code): nothing written, nothing breaks
         self.assertEqual(self.hook("session-start", {"source": "startup"}).get("hookSpecificOutput", {})
                          .get("hookEventName"), "SessionStart")
+
+    def test_in_app_resume_points_quest_at_the_resumed_session(self):
+        """/resume inside a running claude: the hook gets the resumed id, but the
+        Bash tool's CLAUDE_CODE_SESSION_ID stays the one the process started as."""
+        self.hook("session-start", {"source": "startup"},
+                  CLAUDE_ENV_FILE=str(self.tmp / "started.env"))
+        resumed = "sess-bbbb2222"
+        env_file = self.tmp / "resumed.env"
+        self.hook("session-start", {"session_id": resumed, "source": "resume"},
+                  CLAUDE_ENV_FILE=str(env_file))
+        self.hook("prompt", {"session_id": resumed, "prompt": "pick up where we left off"})
+        # a later Bash command: the env file sourced, the stale id still in the env
+        subprocess.run(["sh", "-c", '. "$0" && quest accept --title Resumed --ask 1 '
+                        '--why w --reward r --objective o', str(env_file)],
+                       cwd=str(self.repo), env=self.env, check=True, stdout=subprocess.PIPE)
+        self.assertEqual([q["title"] for q in self.state(resumed)["quests"]], ["Resumed"])
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", self.root)
+        self.assertFalse((self.tmp / "quests" / slug / (self.sid + ".json")).exists())
+        # the hook running again for the same file swaps the id rather than piling up
+        self.hook("session-start", {"session_id": "sess-cccc3333", "source": "resume"},
+                  CLAUDE_ENV_FILE=str(env_file))
+        exports = [l for l in env_file.read_text().splitlines() if "CLAUDE_QUESTS_SESSION_ID" in l]
+        self.assertEqual(exports, ["export CLAUDE_QUESTS_SESSION_ID=sess-cccc3333"])
 
     def test_upgrade_note_once_and_not_on_fresh_install(self):
         version = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())["version"]
@@ -835,6 +860,54 @@ class Shop(QuestTest):
         self.assertIn("Whiskers is full", self.quests("feed 1"))
         self.assertEqual(self.purse()["food"], {"kibble": 1})
 
+    def test_health_potion_restores_every_pet(self):
+        self.fund(25, pets=[self.pet(id=1, joy=20, full=5, hours_ago=3),
+                            self.pet(id=2, name="Tom", joy=60, full=50)])
+        self.assertIn("No health potion in your inventory", self.quests("drink health"))
+        self.assertEqual(self.quests("buy health"),
+                         "Bought a health potion 🔴 for 10 💰\n×1 in your inventory · `/quests drink health`.\n15 💰 left.")
+        self.assertRegex(self.quests("inventory"), r"◇ health .* Health potion +×1 · /quests drink health")
+        self.assertIn("Every pet is back to full joy and fullness. ×0 left.", self.quests("drink red"))
+        self.assertEqual([(p["joy"], p["full"]) for p in self.purse()["pets"]], [(100, 100), (100, 100)])
+        self.assertEqual(self.purse()["potions"], {"health": 0})
+        # no pets: kept rather than wasted
+        self.fund(10, potions={"health": 1})
+        self.assertIn("No pets to heal", self.quests("drink health"))
+        self.assertEqual(self.purse()["potions"], {"health": 1})
+        self.assertIn("No potion called 'mana'", self.quests("drink mana"))
+
+    def test_boosters_give_5x_xp_and_gold_for_an_hour(self):
+        self.fund(30)
+        shop = self.quests("shop")
+        for line in ("🟢         XP booster (green) · 5x xp, 1 hour",
+                     "🟡         Lucky potion (yellow) · 5x gold, 1 hour"):
+            self.assertIn(line, shop)
+        self.quests("buy xp")
+        self.quests("buy lucky")
+        out = self.quests("drink xp")
+        self.assertIn("Quests pay 5x xp for the next 1h00m. ×0 left.", out)
+        self.start()
+        self.q("check", "1.1")                       # 1 gold, 50 xp
+        self.assertEqual((self.purse()["gold"], self.purse()["xp"]), (1, 50))
+        self.quests("drink luck")
+        self.q("check", "1.2")                       # 5 gold, 50 xp
+        self.q("turn-in", "1")                       # 10 gold, 100 xp
+        self.assertEqual((self.purse()["gold"], self.purse()["xp"]), (16, 200))
+        self.assertRegex(self.quests("inventory"), r"🟢 5x xp, 60m left · 🟡 5x gold, 60m left")
+        data = json.loads(self.q("armory"))
+        self.assertEqual([p["id"] for p in data["potions"]], ["health", "xp", "luck"])
+        self.assertAlmostEqual(data["boosts"]["xp"], time.time() + 3600, delta=5)
+        # another while one works adds an hour; one that's worn off pays 1x again
+        purse = self.purse()
+        purse["potions"] = {"xp": 1}
+        purse["boosts"] = {"xp": int(time.time()) + 600, "gold": int(time.time()) - 1}
+        self.fund(**purse)
+        self.assertIn("for the next 1h10m", self.quests("drink booster"))
+        self.prompt("more")
+        self.q("accept", "--title", "More", "--objective", "o")
+        self.q("check", "2.1")
+        self.assertEqual((self.purse()["gold"], self.purse()["xp"]), (17, 250))
+
     def test_petting_cheers_less_when_it_has_just_been_petted(self):
         self.fund(0, pets=[self.pet(species="dog", name="Biscuit", joy=50)])
         self.assertEqual(self.quests("pet 1"), "You pet Biscuit. It wags its tail. Now content.")
@@ -865,6 +938,9 @@ class Shop(QuestTest):
         self.assertEqual(data["food"][2]["stock"], 2)
         self.assertEqual({k: data["pets"][0][k] for k in ("name", "kind", "rarity", "likes")},
                          {"name": "Sir Flambé", "kind": "Dragon", "rarity": "legendary", "likes": "feast"})
+        self.fund(0, pets=[self.pet(id=1), self.pet(id=2, name="Tom")])
+        pen = self.quests("pets")
+        self.assertLess(pen.index("#2"), pen.index("#1"))  # newest first
         self.fund(0)
         self.assertIn("The pen is empty", self.quests("pets"))
         self.assertIn("No pets yet", self.quests("pet 1"))
@@ -883,10 +959,10 @@ class Shop(QuestTest):
         self.assertEqual([mod.cells(l) for l in frame], [mod.WIDTH, mod.WIDTH])
 
     def test_equip_and_unequip_switch_between_owned_skins(self):
-        self.fund(0, owned=["double", "heavy", "beads", "crown"])
-        self.assertIn("You don't own the ASCII frame yet: 5 💰", self.quests("equip ascii"))
-        self.assertEqual(self.quests("equip heavy"), "Equipped the Heavy frame.")
-        self.assertTrue(self.quests().startswith("┏━ 📜 QUEST LOG"))
+        self.fund(0, owned=["double", "ascii", "beads", "crown"])
+        self.assertIn("You don't own the Gem trophy yet: 25 💰", self.quests("equip gem"))
+        self.assertEqual(self.quests("equip ascii"), "Equipped the ASCII frame.")
+        self.assertTrue(self.quests().startswith("+- 📜 QUEST LOG"))
         self.assertIn("isn't equipped", self.quests("unequip double"))
         self.assertIn("back to the Rounded frame", self.quests("unequip frame"))
         self.assertTrue(self.quests().startswith("╭─ 📜 QUEST LOG"))
@@ -907,8 +983,7 @@ class Shop(QuestTest):
     def test_banners(self):
         self.fund(40)
         self.assertIn("needs the custom banner", self.quests("banner Hello"))
-        self.quests("buy refactorer")
-        self.assertIn("📜 QUEST LOG · ⚔ the Refactorer", self.quests())
+        self.assertIn("No 'refactorer' in the shop", self.quests("buy refactorer"))  # one banner now
         self.assertIn("Give it words", self.quests("buy custom"))
         self.assertEqual(self.quests('banner "Ship It"'), "Banner set: ⚔ Ship It")
         self.assertIn("📜 QUEST LOG · ⚔ Ship It", self.quests())
@@ -942,8 +1017,20 @@ class Shop(QuestTest):
         self.assertIn("◆ equipped", shop)
         mod = SessionStart.module(self)
         rows = [l for l in shop.splitlines() if l.startswith("   ") and ("💰" in l or "equipped" in l)]
-        self.assertEqual(len(rows), 17)  # 12 wares for sale, the plaque, the egg and 3 foods
+        self.assertEqual(len(rows), 16)  # 8 wares for sale, the plaque, the egg, 3 foods and 3 potions
         self.assertEqual({mod.cells(l) for l in rows}, {mod.WIDTH})
+
+    def test_everything_for_sale_has_a_tile_picture(self):
+        """The overlay's shop draws each ware from hooks/wares.ts: 12 rows of 12."""
+        src = (PLUGIN / "hooks" / "wares.ts").read_text()
+        drawn = set(re.findall(r"\n  (\w+): (?:\{|potion\()", src))
+        for grid in re.findall(r"rows: \[(.*?)\]|const FLASK = \[(.*?)\]", src, re.S):
+            rows = re.findall(r"'([^']*)'", "".join(grid))
+            self.assertEqual([len(r) for r in rows], [12] * 12, rows)
+        data = json.loads(self.q("armory"))
+        for_sale = ([w["id"] for w in data["wares"] if w["price"]] + ["egg"]
+                    + [f["id"] for f in data["food"]] + [p["id"] for p in data["potions"]])
+        self.assertEqual(set(for_sale) - drawn, set())
 
     def test_claude_cannot_shop(self):
         self.fund(50)

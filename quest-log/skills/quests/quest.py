@@ -88,6 +88,12 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.5.0": (
+        "/quests 1.5.0 — potions and a new shop.\n"
+        "🔴 health heals every pet, 🟢 5x xp and 🟡 5x gold for an hour:\n"
+        "`/quests buy luck`, then `/quests drink luck`. In the overlay the\n"
+        "shop is pixel tiles to click, and new pets hatch from an egg."
+    ),
     "1.4.0": (
         "/quests 1.4.0 — pets! A mystery egg at\n"
         "`/quests shop` hatches one of ten, a dragon if you're lucky.\n"
@@ -197,7 +203,6 @@ BANNER_CELLS = 24  # a custom banner has to share the header with the project
 SHOP = {
     "rounded": {"slot": "frame", "name": "Rounded frame", "price": 0, "look": ("╭", "╮", "╰", "╯", "─")},
     "double": {"slot": "frame", "name": "Double frame", "price": 10, "look": ("╔", "╗", "╚", "╝", "═")},
-    "heavy": {"slot": "frame", "name": "Heavy frame", "price": 10, "look": ("┏", "┓", "┗", "┛", "━")},
     "ascii": {"slot": "frame", "name": "ASCII frame", "note": "for any terminal", "price": 5, "look": ("+", "+", "+", "+", "-")},
     "classic": {"slot": "bar", "name": "Classic bar", "price": 0, "look": ("▰", "▱")},
     "blocks": {"slot": "bar", "name": "Blocks bar", "price": 5, "look": ("■", "□")},
@@ -206,9 +211,6 @@ SHOP = {
     "cup": {"slot": "trophy", "name": "Cup trophy", "note": "marks completed quests", "price": 0, "look": "🏆"},
     "crown": {"slot": "trophy", "name": "Crown trophy", "note": "marks completed quests", "price": 15, "look": "👑"},
     "gem": {"slot": "trophy", "name": "Gem trophy", "note": "marks completed quests", "price": 25, "look": "💎"},
-    "refactorer": {"slot": "banner", "name": "Refactorer banner", "price": 8, "look": "the Refactorer"},
-    "bugslayer": {"slot": "banner", "name": "Bug Slayer banner", "price": 8, "look": "Bug Slayer"},
-    "buildkeeper": {"slot": "banner", "name": "Keeper banner", "price": 8, "look": "Keeper of the Build"},
     "custom": {"slot": "banner", "name": "Custom banner", "note": "your own words", "price": 20, "look": None},
 }
 SLOTS = {"frame": "rounded", "bar": "classic", "trophy": "cup", "banner": None}
@@ -242,6 +244,23 @@ PET_JOY, PET_REST, PET_TIRED_JOY = 8, 30, 2  # a pet within PET_REST seconds of 
 JOY_FADE, FULL_FADE, HUNGRY = 2.0, 3.0, 20  # per hour; under HUNGRY full, joy fades three times as fast
 PET_NAME_CELLS = 16
 MOODS = ((90, "ecstatic"), (65, "happy"), (40, "content"), (20, "glum"), (0, "miserable"))
+
+# Potions: bought into `potions` like food, used up by `/quests drink`. Health
+# fills every pet's joy and fullness; the other two multiply what an objective or
+# a quest pays by BOOST, in XP or in gold, for an hour from drinking (another
+# drunk while one is working adds an hour, it doesn't stack the multiplier). `boosts` holds when each
+# wears off, in epoch seconds.
+BOOST, BOOST_SECONDS = 5, 3600
+POTIONS = {
+    "health": {"name": "Health potion", "color": "red", "look": "🔴", "price": 10,
+               "note": "heals every pet"},
+    "xp": {"name": "XP booster", "color": "green", "look": "🟢", "price": 15,
+           "note": f"{BOOST}x xp, 1 hour", "boost": "xp"},
+    "luck": {"name": "Lucky potion", "color": "yellow", "look": "🟡", "price": 15,
+             "note": f"{BOOST}x gold, 1 hour", "boost": "gold"},
+}
+POTION_NAMES = {"health": "health", "heal": "health", "red": "health", "xp": "xp", "booster": "xp",
+                "green": "xp", "luck": "luck", "lucky": "luck", "yellow": "luck"}
 
 
 def wallet_path() -> Path:
@@ -280,7 +299,8 @@ def wallet() -> dict:
         if "xp" not in purse:  # a purse from before XP: nothing had been spent, so gold is what was earned
             purse["xp"] = purse["gold"] * XP_OBJECTIVE // GOLD_OBJECTIVE
         purse["xp"] = count(purse["xp"])
-        for key, empty in (("owned", []), ("equipped", {}), ("plaques", []), ("pets", []), ("food", {})):
+        for key, empty in (("owned", []), ("equipped", {}), ("plaques", []), ("pets", []), ("food", {}),
+                           ("potions", {}), ("boosts", {})):
             if not isinstance(purse.get(key), type(empty)):
                 purse[key] = empty
         _WALLET = (stamp, purse)
@@ -304,9 +324,18 @@ def rank(xp: int) -> "tuple[str, int, tuple[str, int] | None]":
     return RANKS[i][0], RANKS[i][1], RANKS[i + 1] if i + 1 < len(RANKS) else None
 
 
+def boosted(kind: str, at: "float | None" = None) -> int:
+    """Seconds left on the `kind` boost ("xp" or "gold"), 0 when there's none."""
+    until = wallet()["boosts"].get(kind)
+    left = (until if isinstance(until, (int, float)) else 0) - (time.time() if at is None else at)
+    return max(0, int(left))
+
+
 def earn(state: dict, quest: dict, coins: int, xp: int) -> None:
     purse = wallet()
     before = rank(purse["xp"])[0]
+    coins *= BOOST if boosted("gold") else 1
+    xp *= BOOST if boosted("xp") else 1
     purse["gold"] += coins
     purse["xp"] += xp
     save_wallet(purse)
@@ -389,7 +418,12 @@ def glyphs() -> dict:
 
 
 def session_id(explicit: "str | None" = None) -> str:
-    return explicit or os.environ.get("CLAUDE_CODE_SESSION_ID") or "no-session"
+    """The session being worked. CLAUDE_QUESTS_SESSION_ID first: an in-app
+    /resume switches sessions but leaves CLAUDE_CODE_SESSION_ID on the one the
+    process started with, so the SessionStart hook exports the real id for
+    the Bash tool (see session_env)."""
+    return (explicit or os.environ.get("CLAUDE_QUESTS_SESSION_ID")
+            or os.environ.get("CLAUDE_CODE_SESSION_ID") or "no-session")
 
 
 def state_path(sid: str, root: str) -> Path:
@@ -1410,7 +1444,17 @@ def render_shop() -> str:
         out.append(spread(f"   {item.ljust(12)} {spec['emoji']}" + " " * 9 + food_note(item),
                           (f"×{have} · " if have else "") + f"{spec['price']} {GOLD}"))
     out.append("")
-    out.append(rule("/quests buy <item> · /quests inventory · /quests pets", "", top=False))
+    out.append(" 🧪 POTIONS")
+    for item, spec in POTIONS.items():
+        have = count(purse["potions"].get(item))
+        price = (f"×{have} · " if have else "") + f"{spec['price']} {GOLD}"
+        lead = f"   {item.ljust(12)} {spec['look']}" + " " * 9
+        out.append(spread(lead + fit(potion_note(item), WIDTH - cells(lead) - cells(price) - 2), price))
+    boosts = boost_note()
+    if boosts:
+        out.append(f"   {boosts}")
+    out.append("")
+    out.append(rule("/quests buy <item> · /quests drink <potion> · /quests pets", "", top=False))
     return "\n".join(out)
 
 
@@ -1445,6 +1489,17 @@ def render_inventory() -> str:
                 out.append(spread(f"   ◇ {item.ljust(12)}{spec['emoji']}" + " " * 9 + spec["name"],
                                   f"×{have} · /quests feed <pet> {item}"))
         out.append("")
+    potions = [(item, spec, count(purse["potions"].get(item))) for item, spec in POTIONS.items()]
+    boosts = boost_note()
+    if any(have for _, _, have in potions) or boosts:
+        out.append(" 🧪 POTIONS")
+        for item, spec, have in potions:
+            if have:
+                out.append(spread(f"   ◇ {item.ljust(12)}{spec['look']}" + " " * 9 + spec["name"],
+                                  f"×{have} · /quests drink {item}"))
+        if boosts:
+            out.append(f"   {boosts}")
+        out.append("")
     if len(out) == 3:
         out += ["   Only the clothes on your back. `/quests shop` has wares.", ""]
     out.append(rule("/quests equip <item> · /quests unequip <item>", "", top=False))
@@ -1477,6 +1532,21 @@ def render_trophies() -> str:
 def food_note(item: str) -> str:
     spec = FOOD[item]
     return f"{spec['name']} · +{spec['full']} full, +{spec['joy']} joy"
+
+
+def potion_note(item: str) -> str:
+    spec = POTIONS[item]
+    return f"{spec['name']} ({spec['color']}) · {spec['note']}"
+
+
+def boost_note() -> str:
+    """`🟢 5x xp, 42m left · 🟡 5x gold, 5m left`, or "" with nothing working."""
+    parts = []
+    for spec in POTIONS.values():
+        left = boosted(spec["boost"]) if spec.get("boost") else 0
+        if left:
+            parts.append(f"{spec['look']} {BOOST}x {spec['boost']}, {max(1, round(left / 60))}m left")
+    return " · ".join(parts)
 
 
 def rarity(species: str) -> str:
@@ -1543,6 +1613,44 @@ def buy_food(item: str) -> str:
     save_wallet(purse)
     return (f"Bought {spec['name'].lower()} {spec['emoji']} for {spec['price']} {GOLD}\n"
             f"×{purse['food'][item]} in your inventory.\n{purse['gold']} {GOLD} left.")
+
+
+def buy_potion(item: str) -> str:
+    spec = POTIONS[item]
+    purse = wallet()
+    if purse["gold"] < spec["price"]:
+        return f"Not enough gold: the {spec['name'].lower()} costs {spec['price']} {GOLD} and you have {purse['gold']}."
+    purse["gold"] -= spec["price"]
+    purse["potions"][item] = count(purse["potions"].get(item)) + 1
+    save_wallet(purse)
+    return (f"Bought a {spec['name'].lower()} {spec['look']} for {spec['price']} {GOLD}\n"
+            f"×{purse['potions'][item]} in your inventory · `/quests drink {item}`.\n{purse['gold']} {GOLD} left.")
+
+
+def cmd_drink(ref: str) -> str:
+    item = POTION_NAMES.get(ref.lower().rstrip("s"))
+    if not item:
+        return f"No potion called '{ref}'. The shop sells {', '.join(POTIONS)}."
+    spec = POTIONS[item]
+    purse = wallet()
+    if not count(purse["potions"].get(item)):
+        return f"No {spec['name'].lower()} in your inventory: `/quests buy {item}` ({spec['price']} {GOLD})."
+    if item == "health":
+        if not purse["pets"]:
+            return f"No pets to heal. The {spec['name'].lower()} keeps for when you have one."
+        t = time.time()
+        purse["pets"] = [dict(settle(p, t), joy=100.0, full=100.0) for p in purse["pets"]]
+        said = f"You uncork the {spec['name'].lower()} {spec['look']}. Every pet is back to full joy and fullness."
+    else:
+        t = time.time()
+        kind = spec["boost"]
+        purse["boosts"][kind] = int(max(t, float(purse["boosts"].get(kind) or 0)) + BOOST_SECONDS)
+        left = round((purse["boosts"][kind] - t) / 60)
+        said = (f"You drink the {spec['name'].lower()} {spec['look']}. Quests pay {BOOST}x {kind} "
+                f"for the next {left // 60}h{left % 60:02d}m.")
+    purse["potions"][item] = count(purse["potions"].get(item)) - 1
+    save_wallet(purse)
+    return f"{said} ×{purse['potions'][item]} left."
 
 
 def save_pet(pet: dict) -> None:
@@ -1629,7 +1737,7 @@ def render_pets() -> str:
     purse = wallet()
     pack = "  ".join(f"{spec['emoji']} {count(purse['food'].get(item))}" for item, spec in FOOD.items())
     out = [rule("🐾 THE PEN", f"food {pack}"), ""]
-    for pet in purse["pets"]:
+    for pet in sorted(purse["pets"], key=lambda p: -p["id"]):  # newest first
         d = pet_data(pet)
         likes = FOOD[d["likes"]]
         out.append(spread(f"   #{d['id']} {d['emoji']} {fit(d['name'], PET_NAME_CELLS)}",
@@ -1657,6 +1765,8 @@ def cmd_buy(item: str) -> str:
         return buy_egg()
     if item.rstrip("s") in FOOD:
         return buy_food(item.rstrip("s"))
+    if item.rstrip("s") in POTION_NAMES:
+        return buy_potion(POTION_NAMES[item.rstrip("s")])
     if item in ("engrave", "plaque"):
         return f"Plaques are engraved, not bought off the shelf: /quests engrave <quest> ({PLAQUE_PRICE} {GOLD})."
     spec = SHOP.get(item)
@@ -1778,6 +1888,12 @@ def armory() -> dict:
                   "full": spec["full"], "joy": spec["joy"], "stock": count(purse["food"].get(item))}
                  for item, spec in FOOD.items()],
         "pets": [pet_data(p) for p in purse["pets"]],
+        "potions": [{"id": item, "name": spec["name"], "color": spec["color"], "look": spec["look"],
+                     "note": spec["note"], "price": spec["price"], "stock": count(purse["potions"].get(item))}
+                    for item, spec in POTIONS.items()],
+        # when each wears off (epoch seconds, 0 for none), so the overlay counts down
+        "boosts": {kind: int(purse["boosts"][kind]) if boosted(kind) else 0 for kind in ("xp", "gold")},
+        "boost_times": BOOST,
         "plaques": [dict({k: p.get(k) for k in ("id", "title", "outcome", "project", "date", "session", "quest")},
                          shown=p.get("shown", True)) for p in purse["plaques"]],
     }
@@ -2131,7 +2247,7 @@ GOLD, XP AND THE SHOP
   /quests shop          Trinkets and Tronkets: frames, bars, trophies, banners.
   /quests buy double    Buy an item once; it's equipped straight away.
   /quests inventory     What you own, what's equipped, and your plaques.
-  /quests equip heavy   Put on something you own. `unequip <item|slot>`
+  /quests equip ascii   Put on something you own. `unequip <item|slot>`
                         goes back to how you started.
   /quests engrave 3     Hang turned-in quest #3 in the hall as a plaque.
   /quests trophies      The hall. `unequip p2` puts a plaque in storage.
@@ -2146,6 +2262,14 @@ PETS
   /quests feed 1 treat  Feed #1 (leave out the food for its favourite).
   /quests pet 1         Free, and it cheers them up. Joy and fullness fade
                         by the hour, faster when they're hungry.
+
+POTIONS
+  /quests buy health    🔴 Health potion (10 💰): every pet to full joy
+                        and fullness.
+  /quests buy xp        🟢 XP booster (15 💰): 5x xp for an hour.
+  /quests buy luck      🟡 Lucky potion (15 💰): 5x gold for an hour.
+  /quests drink luck    Drink one you own. Another while one is working
+                        adds an hour.
 
 SETTINGS
   /quests config        Every setting, its value, and what it controls.
@@ -2221,6 +2345,7 @@ USER_COMMANDS = re.compile(
       | name \s+ (?P<name_pet>\S+) \s+ (?P<name_text>.+)
       | feed \s+ (?P<feed>\S+) (?: \s+ (?P<feed_food>\S+) )?
       | pet \s+ (?P<pet>\S+)
+      | (?:drink|quaff|use) \s+ (?P<drink>\S+)
       | (?P<help>help)
     )$""",
     re.IGNORECASE | re.VERBOSE,
@@ -2286,6 +2411,8 @@ def dispatch(raw: str) -> str:
             return cmd_feed(g["feed"], g["feed_food"])
         elif g["pet"]:
             return cmd_pet(g["pet"])
+        elif g["drink"]:
+            return cmd_drink(g["drink"])
         elif g["config"]:
             if g["cfg_key"] and g["cfg_key"].lower() not in SETTINGS:
                 return f"No setting {g['cfg_key']!r}. Settings: {', '.join(SETTINGS)}."
@@ -2391,32 +2518,42 @@ def release_note(version: str, seen: "str | None") -> "str | None":
     return UPGRADE_NOTES[max(same, key=key)] if same else None
 
 
-def put_quest_on_path() -> None:
-    """`quest` on the Bash tool's PATH for the session: an export in the file
-    Claude Code hands SessionStart hooks (CLAUDE_ENV_FILE), which every later
-    Bash command sources. The wrapper lives in skills/quests/bin, not a
-    top-level bin/, which claude.ai-hosted plugins may not ship. Once per
-    file: a resume or a compact starts the hook again."""
+def session_env(sid: str) -> None:
+    """What the Bash tool needs for the session, as exports in the file Claude
+    Code hands SessionStart hooks (CLAUDE_ENV_FILE), which every later Bash
+    command sources:
+    - `quest` on the PATH. The wrapper lives in skills/quests/bin, not a
+      top-level bin/, which claude.ai-hosted plugins may not ship.
+    - CLAUDE_QUESTS_SESSION_ID, the session the hook fired for. Claude Code
+      updates CLAUDE_CODE_SESSION_ID on /clear but not on an in-app /resume,
+      so without it `quest` kept writing to the session the process started
+      as while the hooks wrote to the resumed one.
+    Once per file: a resume or a compact starts the hook again."""
     env_file = os.environ.get("CLAUDE_ENV_FILE")
     if not env_file:
         return
-    line = f'export PATH={shlex.quote(str(Path(__file__).resolve().parent / "bin"))}:"$PATH"\n'
+    path_line = f'export PATH={shlex.quote(str(Path(__file__).resolve().parent / "bin"))}:"$PATH"\n'
+    sid_line = f"export CLAUDE_QUESTS_SESSION_ID={shlex.quote(sid)}\n"
     try:
         path = Path(env_file)
-        if line not in (path.read_text() if path.exists() else ""):
-            with path.open("a") as out:
-                out.write(line)
+        lines = path.read_text().splitlines(keepends=True) if path.exists() else []
+        kept = [l for l in lines if not l.startswith("export CLAUDE_QUESTS_SESSION_ID=")]
+        if path_line not in kept:
+            kept.append(path_line)
+        kept.append(sid_line)
+        if kept != lines:
+            path.write_text("".join(kept))
     except OSError:
         pass  # no `quest`: the protocol names the full path as well
 
 
 def hook_session_start(payload: dict) -> None:
-    put_quest_on_path()
+    sid = session_id(payload.get("session_id"))
+    session_env(sid)
     note = upgrade_note()  # always records, so a skipped note can't come back
     if cfg()["reminders"] == "off":
         return
     root = project_root()
-    sid = session_id(payload.get("session_id"))
     source = payload.get("source", "startup")
     context = protocol()
     path = state_path(sid, root)

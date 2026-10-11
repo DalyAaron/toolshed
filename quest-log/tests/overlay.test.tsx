@@ -2,11 +2,12 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { Armory, Pet, QuestLog } from '../types'
+import { HATCH_SECONDS, petFrame } from '../hooks/pets'
+import { base64, cells } from '../hooks/scene'
 
 // The overlay (hooks/overlay.tsx). Run with: claude plugin test quest-log
 
 const BASE = '/home/me/.claude/quests'
-const STORE = `${BASE}/-proj/sid-1.json`
 const CONFIG = `${BASE}/config.json`
 const WALLET = `${BASE}/wallet.json`
 
@@ -41,11 +42,11 @@ const ARMORY: Armory = {
   gold: 12,
   xp: 320,
   rank: { name: 'Journeyman', floor: 301, next: { name: 'Artificer', floor: 1001 } },
-  look: { bar: ['●', '○'], trophy: '👑', banner: 'Bug Slayer' },
+  look: { bar: ['●', '○'], trophy: '👑', banner: 'Ship It' },
   wares: [
     { id: 'rounded', slot: 'frame', section: '⚒ FRAMES', name: 'Rounded frame', price: 0, preview: '╭──╮', owned: true, equipped: false },
     { id: 'double', slot: 'frame', section: '⚒ FRAMES', name: 'Double frame', price: 10, preview: '╔══╗', owned: false, equipped: false },
-    { id: 'heavy', slot: 'frame', section: '⚒ FRAMES', name: 'Heavy frame', price: 10, preview: '┏━━┓', owned: true, equipped: true },
+    { id: 'ascii', slot: 'frame', section: '⚒ FRAMES', name: 'ASCII frame · for any terminal', price: 5, preview: '+--+', owned: true, equipped: true },
     { id: 'gem', slot: 'trophy', section: '✦ TROPHIES', name: 'Gem trophy', price: 25, preview: '💎', owned: false, equipped: false },
     { id: 'custom', slot: 'banner', section: '⚑ BANNERS', name: 'Custom banner', price: 20, preview: '⚑', owned: true, equipped: false },
   ],
@@ -56,16 +57,10 @@ const ARMORY: Armory = {
   ],
 }
 
-// The shop's shelf headers, and opening one unless it's open already (the
-// open set outlives a mount).
 type Drawing = {
   find: (q: { key: string; type: string }) => Promise<{ props: Record<string, unknown> } | undefined>
-  press: (q: { key: string }) => Promise<unknown>
 }
 const findButton = (pane: Drawing, key: string) => pane.find({ key, type: 'Button' })
-async function openShelf(pane: Drawing, id: string) {
-  if (String((await findButton(pane, `shelf-${id}`))?.props.label).startsWith('▸')) await pane.press({ key: `shelf-${id}` })
-}
 
 const PANE = { title: 'Quests', isFocused: false, bodyColumns: 40, placement: 'dock' } as never
 const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 60 } as never
@@ -73,8 +68,11 @@ const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 60 
 // The world beneath the plugin: one session in /proj, its log on disk
 // (mtime bumped on every write), quest-log's config.json, and a record of
 // every toast raised and every value the plugin gave the live variable.
+// `become` is a /clear or an in-app /resume: the process goes on under
+// another id, with that session's log, or none yet.
 function world(on: On, env: Record<string, string> = {}) {
-  const file = { log: LOG, mtime: 1, config: '{}', armory: ARMORY, walletMtime: 1, reply: 'Done.' }
+  const file = { sid: 'sid-1', log: LOG as QuestLog | null, mtime: 1, config: '{}', armory: ARMORY, walletMtime: 1, reply: 'Done.' }
+  const store = () => `${BASE}/-proj/${file.sid}.json`
   const toasts: string[] = []
   const live: (string | undefined)[] = []
   // each /quests command a button ran, and the session it ran under
@@ -84,7 +82,7 @@ function world(on: On, env: Record<string, string> = {}) {
   // Calls on $ are answered { value } (or { deny }) beneath the plugins.
   const answer = <T,>(value: T) => ({ value }) as never
   mock.env(on, { HOME: '/home/me', ...env })
-  on('session.id', () => answer('sid-1'))
+  on('session.id', () => answer(file.sid))
   on('session.cwd', () => answer('/proj/sub'))
   const ran = (stdout: string) =>
     answer({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
@@ -98,12 +96,12 @@ function world(on: On, env: Record<string, string> = {}) {
     return { deny: `unexpected command: ${e.argv.join(' ')}` } as never
   })
   on('fs.stat', ($, e) =>
-    e.path === STORE || e.path === WALLET
-      ? answer({ kind: 'file', size: 1, mtimeMs: e.path === STORE ? file.mtime : file.walletMtime, isLink: false })
+    (e.path === store() && file.log) || e.path === WALLET
+      ? answer({ kind: 'file', size: 1, mtimeMs: e.path === store() ? file.mtime : file.walletMtime, isLink: false })
       : ({ deny: `no such file: ${e.path}` } as never),
   )
   on('fs.read', ($, e) =>
-    e.path === STORE
+    e.path === store() && file.log
       ? answer(JSON.stringify(file.log))
       : e.path === CONFIG
         ? answer(file.config)
@@ -129,6 +127,10 @@ function world(on: On, env: Record<string, string> = {}) {
     file.log = log
     file.mtime += 1
   }
+  const become = (sid: string, log: QuestLog | null) => {
+    file.sid = sid
+    write(log as QuestLog)
+  }
   const configure = (config: object) => {
     file.config = JSON.stringify(config)
   }
@@ -137,7 +139,7 @@ function world(on: On, env: Record<string, string> = {}) {
     file.walletMtime += 1
     file.reply = reply
   }
-  return { toasts, live, pressed, blits, write, configure, sell }
+  return { toasts, live, pressed, blits, write, become, configure, sell }
 }
 
 test('off by default: no toasts, and the Stop hook keeps its line', async ($, on) => {
@@ -225,6 +227,34 @@ const DONE_LOG: QuestLog = {
   ],
 }
 
+test('follows the session through a /clear and an in-app /resume', async ($, on) => {
+  const clock = mock.clock(on)
+  const { pressed, become } = world(on, ON)
+  await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  const mount = () => $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+
+  // /clear: a new id with no log yet, and no session.start
+  become('sid-2', null)
+  await clock.advance(750)
+  let pane = await mount()
+  expect(await pane.find({ text: 'No quests yet this session.' })).toBeDefined()
+  expect(await pane.find({ text: /Add pagination/ })).toBeUndefined()
+  await pane.unmount()
+
+  // /resume into a session that has one
+  become('sid-3', { ...DONE_LOG, toasts: [] })
+  await clock.advance(750)
+  pane = await mount()
+  expect(await pane.find({ text: /#3 Ship the cache/ })).toBeDefined()
+  // and its buttons run quest.py under the resumed id
+  await pane.press({ key: 'tab-trophies' })
+  await pane.press({ key: 'engrave-3' })
+  await pane.press({ key: 'tab-log' })
+  await pane.unmount()
+  expect(pressed).toEqual([{ command: 'engrave 3', sid: 'sid-3' }])
+})
+
 test('the log page wears what is equipped: banner, rank, gold, bar', async ($, on) => {
   const clock = mock.clock(on)
   world(on, ON)
@@ -233,7 +263,7 @@ test('the log page wears what is equipped: banner, rank, gold, bar', async ($, o
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'quest-log', surface, component: 'Pane', requestId: 'quests', props: PANE })
-    expect(await pane.find({ text: /⚔ Bug Slayer/ })).toBeDefined()
+    expect(await pane.find({ text: /⚔ Ship It/ })).toBeDefined()
     // the purse is a Client on both surfaces
     expect(await pane.find({ in: 'purse', text: '🏅 Journeyman' })).toBeDefined()
     expect(await pane.find({ in: 'purse', text: ' · 320 xp' })).toBeDefined()
@@ -255,13 +285,12 @@ test('shop: Buy runs /quests buy through quest.py and shows its answer', async (
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'quest-log', surface, component: 'Pane', requestId: 'quests', props: PANE })
     await pane.press({ key: 'tab-shop' })
-    await openShelf(pane, 'frame')
-    await openShelf(pane, 'trophy')
     // free wares aren't for sale; owned ones equip; equipped ones say so
     expect(await pane.find({ key: 'buy-rounded' })).toBeUndefined()
-    expect(await pane.find({ key: 'equip-heavy' })).toBeUndefined()
-    expect(await pane.find({ text: /◆ equipped/ })).toBeDefined()
+    expect(await pane.find({ key: 'equip-ascii' })).toBeUndefined()
+    expect(await pane.find({ text: /◆ on/ })).toBeDefined()
     expect(await pane.find({ key: 'buy-gem' })).toBeDefined()
+    expect(await pane.find({ key: 'equip-custom' })).toBeDefined()
 
     sell(
       { ...ARMORY, gold: 2, wares: ARMORY.wares.map(w => (w.id === 'double' ? { ...w, owned: true, equipped: true } : w)) },
@@ -294,14 +323,14 @@ test('inventory: Equip, Unequip, Store, and the custom banner words', async ($, 
   await pane.press({ key: 'tab-inventory' })
   expect(await pane.find({ key: 'equip-double' })).toBeUndefined() // not owned
   await pane.press({ key: 'equip-rounded' })
-  await pane.press({ key: 'unequip-heavy' })
+  await pane.press({ key: 'unequip-ascii' })
   await pane.press({ key: 'store-p1' })
   await pane.press({ key: 'display-p2' })
   await pane.input({ key: 'banner-text', text: '  Keeper of Caches ' })
 
   expect(pressed.map(p => p.command)).toEqual([
     'equip rounded',
-    'unequip heavy',
+    'unequip ascii',
     'unequip p1',
     'equip p2',
     'banner Keeper of Caches',
@@ -449,14 +478,13 @@ test('shop: sells the mystery egg and food, a portion at a time', async ($, on) 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'quest-log', surface, component: 'Pane', requestId: 'quests', props: PANE })
     await pane.press({ key: 'tab-shop' })
-    await openShelf(pane, 'pets')
-    await openShelf(pane, 'food')
-    expect((await pane.find({ key: 'buy-egg' }))?.props.label).toBe('Buy 1000 💰')
-    expect((await pane.find({ key: 'buy-feast' }))?.props.dimColor).toBe(false)
-    expect(await pane.find({ text: '×2' })).toBeDefined() // kibble in the inventory
+    expect(await pane.find({ key: 'buy-egg' })).toBeDefined()
+    expect(await pane.find({ text: /×2 1 💰/ })).toBeDefined() // kibble in the inventory
     await pane.press({ key: 'buy-egg' })
-    // laid out for a toast's three lines
-    expect(toasts.at(-1)).toBe("The egg cracks... it's an Axolotl 🦎\n(uncommon)! Meet Bubbles, pet #2.\nFind it in the Pets tab!")
+    // laid out for a toast's three lines, and the pane goes to watch it hatch
+    expect(toasts.at(-1)).toBe("The egg cracks... it's an Axolotl 🦎\n(uncommon)! Meet Bubbles, pet #2.\nWatch it hatch in the Pets tab!")
+    expect((await findButton(pane, 'tab-pets'))?.props.variant).toBe('primary')
+    await pane.press({ key: 'tab-shop' })
     await pane.press({ key: 'buy-kibble' })
     await pane.unmount()
   }
@@ -495,6 +523,52 @@ test('pets: each moves on a terminal, and is petted, fed and named from its card
   await pane.unmount()
 })
 
+test('pets: a new pet hatches from a pixel egg where it is first seen, then moves as itself', async ($, on) => {
+  const clock = mock.clock(on)
+  const { sell } = world(on, ON)
+  sell(PETS, 'Done.')
+  await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+  await pane.press({ key: 'tab-pets' })
+
+  const bubbles: Pet = { ...PET, id: 3, species: 'axolotl', kind: 'Axolotl', emoji: '🦎', name: 'Bubbles', hungry: false, full: 70, joy: 70 }
+  const pose = { joy: 70, hungry: false, sincePetted: -1 }
+  const egg = base64(cells(petFrame('axolotl', 0, { ...pose, sinceHatched: 0 }, 3)))
+  // the pets already in the pen when the overlay started are not new
+  expect((await pane.find({ key: 'sprite-1' }))?.props.cells).not.toBe(base64(cells(petFrame('fox', 0, { ...pose, sinceHatched: 0 }, 1))))
+
+  // bought by /quests buy egg, outside the pane: an egg, sitting still, at first sight
+  sell({ ...PETS, pets: [...PETS.pets!, bubbles] }, 'Done.')
+  await clock.advance(750)
+  expect((await pane.find({ key: 'sprite-3' }))?.props.cells).toBe(egg)
+  // newest on top, where the hatch can't be missed
+  expect((await pane.findAll({ type: 'Raster' })).map(r => r.props.key)).toEqual(['sprite-3', 'sprite-2', 'sprite-1'])
+  // and once it's hatched, the axolotl and no shell
+  await clock.advance((HATCH_SECONDS + 0.5) * 1000)
+  const later = await pane.find({ key: 'sprite-3' })
+  expect(later).toBeDefined()
+  await pane.unmount()
+  const again = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+  expect((await again.find({ key: 'sprite-3' }))?.props.cells).not.toBe(egg)
+  await again.unmount()
+})
+
+test('pets: the hatch is an egg that cracks, a lid that flies, then the pet', () => {
+  const pose = { joy: 50, hungry: false, sincePetted: -1 }
+  const shell = 0xf4ead0
+  const crack = 0x5a3b1e
+  const at = (s: number) => Array.from(petFrame('dog', 5, { ...pose, sinceHatched: s }, 2).px)
+  expect(at(0.5)).toContain(shell)
+  expect(at(0.5)).not.toContain(crack)
+  expect(at(2.2)).toContain(crack) // cracking
+  expect(at(2.6)).toContain(0xb5794a) // the dog peeks out (its coat)
+  expect(at(2.6)).toContain(shell)
+  expect(at(HATCH_SECONDS + 0.1)).not.toContain(shell)
+  // without a hatch, or long after, it's just the dog
+  expect(at(-1)).toEqual(Array.from(petFrame('dog', 5, pose, 2).px))
+})
+
 test('pets: elsewhere a still picture; an empty pen offers an egg', async ($, on) => {
   const clock = mock.clock(on)
   const { pressed, sell } = world(on, ON)
@@ -504,7 +578,7 @@ test('pets: elsewhere a still picture; an empty pen offers an egg', async ($, on
 
   const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'desktop', component: 'Pane', requestId: 'quests', props: PANE })
   await pane.press({ key: 'tab-pets' })
-  expect((await pane.findAll({ type: 'Svg' })).map(e => e.props.alt)).toEqual(['Ember the fox', 'Quackers the rubber duck'])
+  expect((await pane.findAll({ type: 'Svg' })).map(e => e.props.alt)).toEqual(['Quackers the rubber duck', 'Ember the fox']) // newest first
   expect(await pane.find({ type: 'Raster' })).toBeUndefined()
   await pane.unmount()
 
@@ -517,29 +591,74 @@ test('pets: elsewhere a still picture; an empty pen offers an egg', async ($, on
   await empty.unmount()
 })
 
-test('shop: every shelf starts closed, says what it holds, and opens and closes', async ($, on) => {
+const POTIONS: Armory = {
+  ...PETS,
+  potions: [
+    { id: 'health', name: 'Health potion', color: 'red', look: '🔴', note: 'heals every pet', price: 10, stock: 2 },
+    { id: 'xp', name: 'XP booster', color: 'green', look: '🟢', note: '5x xp, 1 hour', price: 15, stock: 1 },
+    { id: 'luck', name: 'Lucky potion', color: 'yellow', look: '🟡', note: '5x gold, 1 hour', price: 15, stock: 0 },
+  ],
+  boost_times: 5,
+  boosts: { xp: 0, gold: Math.round(Date.now() / 1000) + 25 * 60 },
+}
+
+test('potions: bought from the shop, drunk from the inventory and the pen, boosts in the header', async ($, on) => {
   const clock = mock.clock(on)
-  world(on, ON)
+  const { pressed, sell } = world(on, ON)
+  sell(POTIONS, 'You drink the xp booster 🟢.')
+  await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+
+  const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+  // only the boost that's working, in its potion's colour
+  const boosts = await pane.findAll({ type: 'Text', text: / 5x / })
+  expect(boosts.map(t => t.props.color)).toEqual(['warning'])
+  expect(boosts[0]?.text).toMatch(/^🟡 5x gold · 2[45]m$/)
+
+  await pane.press({ key: 'tab-shop' })
+  expect((await findButton(pane, 'buy-luck'))?.props.label).toBe('Buy lucky potion for 15 gold')
+  expect(await pane.find({ type: 'Text', text: /×2 10 💰/ })).toBeDefined() // health potions in stock
+  await pane.press({ key: 'buy-health' })
+
+  await pane.press({ key: 'tab-inventory' })
+  expect(await findButton(pane, 'drink-luck')).toBeUndefined() // none in stock
+  await pane.press({ key: 'drink-xp' })
+
+  await pane.press({ key: 'tab-pets' })
+  expect((await findButton(pane, 'drink-health'))?.props.label).toBe('Drink 🔴 ×2: heal every pet')
+  await pane.press({ key: 'drink-health' })
+  expect(pressed.map(p => p.command)).toEqual(['buy health', 'drink xp', 'drink health'])
+  await pane.unmount()
+})
+
+test('shop: a grid of tiles, each its pixels, name and price, the whole tile one press', async ($, on) => {
+  const clock = mock.clock(on)
+  const { pressed, sell } = world(on, ON)
+  sell(POTIONS, 'Bought.')
   await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
   await clock.advance(0)
 
   const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
   await pane.press({ key: 'tab-shop' })
   expect(await pane.find({ key: 'sign' })).toBeDefined()
-  expect(await pane.find({ type: 'Button', text: /^Buy/ })).toBeUndefined()
-  const labels = (await pane.findAll({ type: 'Button' })).map(b => String(b.props.label)).filter(l => /^[▸▾]/.test(l))
-  expect(labels).toEqual(['▸ ⚒ FRAMES · 1 for sale', '▸ ✦ TROPHIES · 1 for sale', '▸ ⚑ BANNERS · all owned'])
-
-  await pane.press({ key: 'shelf-trophy' })
-  expect((await findButton(pane, 'shelf-trophy'))?.props.label).toBe('▾ ✦ TROPHIES · 1 for sale')
-  expect(await pane.find({ key: 'buy-gem' })).toBeDefined()
-  expect(await pane.find({ key: 'buy-double' })).toBeUndefined() // the frames stay shut
-
-  // kept while the pane comes and goes
+  for (const head of ['⚒ LOOKS', '🥚 PETS AND FOOD', '🧪 POTIONS']) expect(await pane.find({ type: 'Text', text: head })).toBeDefined()
+  // a tile is a bordered box as wide as its picture, the press inside it
+  const tile = await pane.find({ key: 'tile-gem' })
+  expect(tile?.props).toMatchObject({ borderStyle: 'round', width: 14 })
+  const gem = await findButton(pane, 'buy-gem')
+  expect(gem?.props).toMatchObject({ label: 'Buy the Gem trophy for 25 gold', plain: true })
+  // its pixels: half blocks in the gem's colours, then its name and price
+  const gemBlue = (await pane.findAll({ type: 'Text', text: /▀/ })).filter(t => t.props.color === '#6ad1ff')
+  expect(gemBlue.length).toBeGreaterThan(0)
+  expect(await pane.find({ type: 'Text', text: '    Gem     ' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '   25 💰   ' })).toBeDefined()
+  // what's on can't be bought again; what can't be afforded is dim
+  expect(await pane.find({ key: 'tile-ascii' })).toBeDefined()
+  expect(await findButton(pane, 'equip-ascii')).toBeUndefined()
+  expect((await pane.find({ key: 'tile-egg' }))?.props.borderDimColor).toBe(true)
+  await pane.press({ key: 'buy-gem' })
+  await pane.press({ key: 'equip-custom' })
+  await pane.press({ key: 'buy-xp' })
+  expect(pressed.map(p => p.command)).toEqual(['buy gem', 'equip custom', 'buy xp'])
   await pane.unmount()
-  const again = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
-  expect(await again.find({ key: 'buy-gem' })).toBeDefined()
-  await again.press({ key: 'shelf-trophy' })
-  expect(await again.find({ key: 'buy-gem' })).toBeUndefined()
-  await again.unmount()
 })

@@ -230,10 +230,19 @@ of every surface and draws nothing for one it lacks):
   hyperlinks (Terminal.app, tmux by default) prints a link's URL after its
   text, which for a `file://` path was most of the line.
 
-*Shelves:* the shop's sections fold under a header button and start closed,
-so the tab opens on the sign and six lines rather than every ware. A closed
-header says how many of its wares are still for sale. Which are open is kept in
-`$.state` (`shopOpen`), so it holds while the pane comes and goes.
+*Tiles:* the shop is a grid of square tiles, in three groups (looks, pets
+and food, potions), each a 12-pixel picture of the ware (`hooks/wares.ts`,
+drawn from palette-letter grids like the pets) over its name and price. A
+`Raster` can't be pressed and a `Button` holds only strings and `Text`, so on
+a terminal the picture is `Text`: a half block per cell in the top pixel's
+colour on the bottom one's (`halfBlocks` in scene.ts), and the whole tile is
+one plain `Button` the person clicks anywhere on. The overlay's bracketed
+`[Label]` Button would replace those children, so tiles use the terminal's
+own (`TileButton`). Elsewhere the picture is an `Svg` with a Buy or Equip
+button under it. A look already on has no press, its tile bordered green;
+one you can't afford is dim. The tiles replaced folding shelves (and their
+`shopOpen` state): pictures are the point, so they show from the start, and
+the pane scrolls. A test fails if something goes on sale without a picture.
 
 `Client` was not used for keyboard navigation: a focused pane already walks
 its buttons with Tab and the arrows.
@@ -270,6 +279,16 @@ env file isn't there.
 
 Hooks keep calling `quest.py` through `${CLAUDE_PLUGIN_ROOT}`; they don't need
 the PATH and don't go through permissions.
+
+The same file carries the session id. Hooks get it in their payload, but the
+CLI reads `CLAUDE_CODE_SESSION_ID`, which Claude Code resets on `/clear` and
+not on an in-app `/resume`: after `claude` then `/resume`, the hooks logged asks
+in the resumed session while `quest` kept writing to the one the process started
+as (`claude --resume` was fine, as it starts the process under the resumed id).
+So the hook also exports `CLAUDE_QUESTS_SESSION_ID`, the id it fired for,
+replacing any earlier one in the file, and `session_id()` prefers it. This relies
+on Claude Code sourcing the resumed session's env file after `/resume`, which
+its changelog lists as fixed by 2.1.296.
 
 ## Release notes
 
@@ -389,6 +408,16 @@ seconds adds 2, so mashing the button isn't the way to a happy pet; feeding
 its favourite food is (+10 on top). Feeding a full pet is refused rather
 than wasted.
 
+**Potions are the third consumable.** Bought into `potions`, used up by
+`/quests drink`. Pets have no health of their own, so the health potion is
+joy and fullness both set to 100, for every pet at once; with no pets it's
+refused rather than wasted. The XP booster and the lucky potion write when
+they wear off into `boosts`, and `earn()` multiplies XP or gold by 5 while that's in
+the future. Drinking another while one is working adds an hour to it, never
+25x. Like `settle()`, nothing ticks: a boost is over when its time has passed,
+and the overlay gets the end time (not the minutes left) so it can count
+down between reads of the purse.
+
 **Claude never tends them.** They're bought with gold, so they're the user's
 in the same way as the rest of the shop: SKILL.md says so, and like the
 other shop verbs they're reachable only through `/quests`, not `quest`.
@@ -400,6 +429,18 @@ hearts for two seconds after a pet, noticed from `petted` changing so a
 `/quests pet` typed at the prompt shows them too). The sign and the pets
 share one clock: whatever the last terminal draw held that moves is
 repainted by `$.ui.blit`, and the clock stops when nothing is taken.
+
+A pet that hatches while the overlay watches comes out of an egg first: four
+seconds in its sprite's place (`hatchFrame` in pets.ts) of the egg wobbling,
+cracking left to right, its lid flying off with the pet peeking out, and the
+bottom half dropping away in a burst of sparkles. A new pet is one in the
+armory that wasn't at the last read, so `/quests buy egg` at the prompt
+hatches it too; the pets there at the overlay's first read are old friends.
+The hatch starts when the pet's card is first drawn, not when it was bought,
+so it isn't missed on another tab, and an egg bought from the Shop switches
+the pane to Pets to watch it. The pen lists the newest pet first (in the
+overlay and `/quests pets`), so a hatch is at the top, not below the fold. Terminal only: elsewhere the still picture is
+the pet.
 
 ## /todo handoff
 

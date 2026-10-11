@@ -217,6 +217,35 @@ export function cells(c: Canvas): Uint32Array {
   return words
 }
 
+const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`
+
+// The canvas as runs of text cells, a row of runs per two pixel rows: the
+// glyph, its colour and its background (null for the terminal's own), and how
+// many cells of it. For pixels drawn as Text, which a Button can hold where a
+// Raster can't be pressed.
+export type Run = { glyph: string; fg: string | null; bg: string | null; n: number }
+export function halfBlocks(c: Canvas): Run[][] {
+  const out: Run[][] = []
+  for (let row = 0; row < Math.ceil(c.h / 2); row++) {
+    const runs: Run[] = []
+    for (let x = 0; x < c.w; x++) {
+      const top = c.get(x, row * 2)
+      const bottom = c.get(x, row * 2 + 1)
+      const cell: Run =
+        top === NONE && bottom === NONE
+          ? { glyph: ' ', fg: null, bg: null, n: 1 }
+          : top === NONE
+            ? { glyph: '▄', fg: hex(bottom), bg: null, n: 1 }
+            : { glyph: '▀', fg: hex(top), bg: bottom === NONE ? null : hex(bottom), n: 1 }
+      const last = runs[runs.length - 1]
+      if (last && last.glyph === cell.glyph && last.fg === cell.fg && last.bg === cell.bg) last.n++
+      else runs.push(cell)
+    }
+    out.push(runs)
+  }
+  return out
+}
+
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
 // little-endian u32s as padded base64, as RasterProps.cells wants
@@ -231,8 +260,6 @@ export function base64(words: Uint32Array): string {
   }
   return out
 }
-
-const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`
 
 // The canvas as an SVG, a rect per run of one colour along a row; a cell's
 // two pixels are as wide as they are tall, so each pixel is `size` square.

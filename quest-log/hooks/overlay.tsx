@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderChildren, RenderSurface, TextProps, Timer } from 'claude-code'
 
-import type { Armory, Food, Pet, Plaque, Quest, QuestLog, Toast, View, Ware } from '../types'
+import type { Armory, Food, Pet, Plaque, Potion, Quest, QuestLog, Toast, View, Ware } from '../types'
 import { PET_COLUMNS, PET_ROWS, petFrame } from './pets'
-import { base64, cells, shop, svg } from './scene'
+import { WARE_PIXELS, wareArt } from './wares'
+import { base64, cells, halfBlocks, shop, svg } from './scene'
 import type { Canvas } from './scene'
 
 // The overlay: quest-log drawn inside Claude Code. quest.py stays the only
@@ -43,13 +44,15 @@ const shown = atom({ plugin: 'quest-log', key: 'shown' } as const, [])
 const isOn = atom({ plugin: 'quest-log', key: 'isOn' } as const, false)
 const armory = atom({ plugin: 'quest-log', key: 'armory' } as const, null)
 const view = atom({ plugin: 'quest-log', key: 'view' } as const, 'log')
-const shopOpen = atom({ plugin: 'quest-log', key: 'shopOpen' } as const, [])
 
 // The elements the views draw with: every surface has the first four, the
 // rest only some (no Input on mobile, Raster on the terminal alone, Svg on
 // every surface but the terminal, Client on the terminal and desktop).
 type Els = Pick<Elements['desktop'], 'Box' | 'Text' | 'Button' | 'Link'> &
-  Partial<Pick<Elements['desktop'], 'Input' | 'Svg' | 'Client'> & Pick<Elements['terminal'], 'Raster'>>
+  Partial<Pick<Elements['desktop'], 'Input' | 'Svg' | 'Client'> & Pick<Elements['terminal'], 'Raster'>> & {
+    // the terminal's own Button, unbracketed, for a shop tile: its pixels are the press
+    TileButton?: Elements['terminal']['Button']
+  }
 
 // A surface's table names every element of every surface, one it can't draw
 // drawing nothing, so what the views may use goes by the surface, not by
@@ -81,6 +84,7 @@ function elementsFor(table: Elements[RenderSurface], surface: RenderSurface): El
     Client: surface === 'terminal' || surface === 'desktop' ? all.Client : undefined,
     Raster: surface === 'terminal' ? all.Raster : undefined,
     Svg: surface === 'terminal' ? undefined : all.Svg,
+    TileButton: surface === 'terminal' ? all.Button : undefined,
   }
 }
 
@@ -106,6 +110,8 @@ const viewOf = (text: string): View | undefined => VIEWS.find(v => v.view === te
 // A reload starts these over; the log itself is re-read and the queue's
 // shown part is in $.state, so nothing is toasted twice.
 let store: string | null = null
+// the session `path` was located for
+let sid: string | null = null
 let path: string | null = null
 let mtime = -1
 let walletMtime = -1
@@ -121,6 +127,10 @@ let frame = 0
 let misses = 0
 // the frame each pet was last seen being petted, for its hearts
 const pettedAt = new Map<number, number>()
+// pets that hatched while the overlay watched: the frame their card was first
+// drawn, when the egg starts to crack (HATCHING until then)
+const hatchedAt = new Map<number, number>()
+const HATCHING = -1
 
 // quest.py's store_base(): CLAUDE_QUESTS_DIR, else <config dir>/quests
 async function storeBase($: EngineInterface): Promise<string> {
@@ -130,8 +140,8 @@ async function storeBase($: EngineInterface): Promise<string> {
   )
 }
 
-// Where quest.py writes this session's log: <store>/<slug(git root)>/<sid>.json
-async function locate($: EngineInterface, base: string): Promise<string> {
+// Where quest.py writes a session's log: <store>/<slug(git root)>/<sid>.json
+async function locate($: EngineInterface, base: string, sid: string): Promise<string> {
   const cwd = await $.session.cwd()
   let root = cwd
   try {
@@ -140,7 +150,7 @@ async function locate($: EngineInterface, base: string): Promise<string> {
   } catch {
     // not a git checkout, or no git: quest.py falls back to the cwd too
   }
-  return `${base}/${slug(root)}/${await $.session.id()}.json`
+  return `${base}/${slug(root)}/${sid}.json`
 }
 
 // The `overlay` setting as quest.py's load_config() reads it:
@@ -173,9 +183,10 @@ async function setOn($: EngineInterface, on: boolean): Promise<void> {
 // quest.py, run as the session would run it: from the session's directory
 // and under its id, so `engrave` finds this session's log.
 async function questPy($: EngineInterface, args: string[], stdin?: string): Promise<string> {
+  const id = await $.session.id()
   const ran = await $.process.run(['python3', `${$.plugin.root}/skills/quests/quest.py`, ...args], {
     cwd: await $.session.cwd(),
-    env: { CLAUDE_CODE_SESSION_ID: await $.session.id() },
+    env: { CLAUDE_QUESTS_SESSION_ID: id, CLAUDE_CODE_SESSION_ID: id },
     stdin,
     timeoutMs: 10000,
   })
@@ -192,9 +203,13 @@ async function readArmory($: EngineInterface, base: string): Promise<void> {
     const next = JSON.parse(await questPy($, ['armory'])) as Armory
     // petted since the last read (from here or from /quests pet): hearts
     const before = new Map(((await read($, armory))?.pets ?? []).map(p => [p.id, p.petted]))
+    const known = await read($, armory)
     for (const pet of next.pets ?? []) {
       const was = before.get(pet.id)
       if (was !== undefined && pet.petted > was) pettedAt.set(pet.id, frame)
+      // new since the last read (from the Shop or /quests buy egg): it hatches
+      // where it's next seen; the pets there at the first read are old friends
+      if (known && was === undefined) hatchedAt.set(pet.id, HATCHING)
     }
     await update($, armory, () => next)
     walletMtime = stamp
@@ -208,7 +223,16 @@ async function readArmory($: EngineInterface, base: string): Promise<void> {
 function refresh($: EngineInterface): Promise<void> {
   reading ??= (async () => {
     store ??= await storeBase($)
-    path ??= await locate($, store)
+    // /clear and an in-app /resume go on in this process under another id,
+    // and no session.start fires for it: follow the id, and start its log over.
+    const now = await $.session.id()
+    if (now !== sid || !path) {
+      path = await locate($, store, now)
+      sid = now
+      mtime = -1
+      fresh.clear()
+      await update($, log, () => null)
+    }
     const on = await overlaySetting($, store)
     await setOn($, on)
     if (on) await readArmory($, store)
@@ -257,7 +281,7 @@ function toastOf(said: string): string {
   const hatched = HATCHED.exec(said)
   if (hatched) {
     const [, it, tier, name, id] = hatched
-    return `The egg cracks... ${it}\n(${tier})! Meet ${name}, pet #${id}.\nFind it in the Pets tab!`
+    return `The egg cracks... ${it}\n(${tier})! Meet ${name}, pet #${id}.\nWatch it hatch in the Pets tab!`
   }
   return said.split('\n').slice(0, 3).join('\n')
 }
@@ -274,6 +298,8 @@ async function press($: EngineInterface, command: string): Promise<void> {
   walletMtime = -1
   mtime = -1
   await refresh($)
+  // an egg bought here hatches in front of you
+  if (HATCHED.test(said)) await show($, 'pets')
 }
 
 const seconds = (at: number) => (at * FRAME_MS) / 1000
@@ -314,11 +340,6 @@ function animated(els: Els, key: string, columns: number, rows: number, draw: (t
   if (!Raster) return null
   moving.set(key, { columns, rows, draw })
   return <Raster key={key} columns={columns} rows={rows} cells={base64(cells(draw(seconds(frame))))} />
-}
-
-// Open a shop shelf, or close it: every shelf starts closed.
-async function toggleShelf($: EngineInterface, id: string): Promise<void> {
-  await update($, shopOpen, open => (open.includes(id) ? open.filter(s => s !== id) : [...open, id]))
 }
 
 async function show($: EngineInterface, next: View): Promise<void> {
@@ -386,8 +407,40 @@ function header(els: Els, gear: Armory | null) {
       <Text dimColor wrap="truncate-end">
         {meter(fraction, gear.look.bar, 8)} {toNext}
       </Text>
+      {boostsLine(els, gear)}
     </Box>
   )
+}
+
+// A potion's colour in the theme: red, green and yellow are error, success
+// and warning in every theme.
+const POTION_COLOR: Record<string, string> = { red: 'error', green: 'success', yellow: 'warning' }
+
+// The boosts working now, each in its potion's colour with the minutes left.
+// quest.py gives when each wears off, so this counts down between reads.
+function boostsLine(els: Els, gear: Armory) {
+  const { Box, Text } = els
+  const now = Date.now() / 1000
+  const working = (gear.potions ?? []).flatMap(p => {
+    const kind = p.id === 'xp' ? 'xp' : p.id === 'luck' ? 'gold' : null
+    const left = kind ? (gear.boosts?.[kind] ?? 0) - now : 0
+    return kind && left > 0 ? [{ p, kind, minutes: Math.max(1, Math.round(left / 60)) }] : []
+  })
+  if (working.length === 0) return null
+  return (
+    <Box key="boosts" columnGap={2} flexWrap="wrap">
+      {working.map(({ p, kind, minutes }) => (
+        <Text key={`boost-${kind}`} color={POTION_COLOR[p.color]}>
+          {p.look} {gear.boost_times ?? 5}x {kind} · {minutes}m
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+// One potion: its dot and name in its colour, what it does, and `right`.
+function potionRow(els: Els, p: Potion, right: RenderChildren) {
+  return hang(els, `potion-${p.id}`, p.look, `${p.name} · ${p.note}`, {}, right, { color: POTION_COLOR[p.color] })
 }
 
 function tabs($: EngineInterface, els: Els, current: View) {
@@ -556,108 +609,146 @@ function sections(els: Els, wares: Ware[], row: (w: Ware) => RenderChildren) {
   ))
 }
 
-// A shelf of the shop: a header to press, and its wares, indented under it,
-// only while it's open.
-// Closed, the header says how many of its wares are still for sale.
-function shelf($: EngineInterface, els: Els, id: string, head: string, isOpen: boolean, summary: string, body: () => RenderChildren) {
-  const { Box, Button } = els
-  return (
-    <Box key={`shelf-${id}`} flexDirection="column" marginBottom={isOpen ? 1 : 0}>
-      <Box>
-        <Button
-          key={`shelf-${id}`}
-          label={`${isOpen ? '▾' : '▸'} ${head}${summary ? ` · ${summary}` : ''}`}
-          variant={isOpen ? 'primary' : 'secondary'}
-          onPress={() => toggleShelf($, id)}
-        />
+// A shop tile: one thing for sale, its picture over its name and price.
+// `command` is what pressing it runs; none for a look already on.
+type Tile = { id: string; name: string; label: string; price: string; key: string; command?: string; tone?: 'on' | 'dim' }
+
+// A tile is as wide as its picture, and its words have to fit under it.
+const TILE_NAMES: Record<string, string> = { custom: 'Banner', egg: 'Egg', health: 'Health', xp: 'XP boost', luck: 'Lucky' }
+const tileName = (id: string, name: string) => TILE_NAMES[id] ?? name.split(' ')[0] ?? name
+const textCells = (text: string) => [...text].reduce((n, ch) => n + ((ch.codePointAt(0) ?? 0) >= 0x1f000 ? 2 : 1), 0)
+function centered(text: string, cols: number): string {
+  let t = text
+  while (textCells(t) > cols) t = [...t].slice(0, -1).join('')
+  const room = cols - textCells(t)
+  return ' '.repeat(Math.floor(room / 2)) + t + ' '.repeat(Math.ceil(room / 2))
+}
+
+// What the shop sells, as tiles in three groups: looks (bought once, then
+// equipped), the egg and food, and potions (both a portion at a time).
+function shopTiles(gear: Armory): { head: string; tiles: Tile[] }[] {
+  const looks = gear.wares
+    .filter(w => w.price > 0)
+    .map((w): Tile => {
+      const base = { id: w.id, name: tileName(w.id, w.name) }
+      if (w.equipped) return { ...base, label: `${w.name}, on`, price: '◆ on', key: `on-${w.id}`, tone: 'on' }
+      if (w.owned) return { ...base, label: `Equip the ${w.name}`, price: 'Equip', key: `equip-${w.id}`, command: `equip ${w.id}` }
+      return {
+        ...base,
+        label: `Buy the ${w.name} for ${w.price} gold`,
+        price: `${w.price} 💰`,
+        key: `buy-${w.id}`,
+        command: `buy ${w.id}`,
+        tone: w.price > gear.gold ? 'dim' : undefined,
+      }
+    })
+  const stocked = (id: string, name: string, price: number, stock: number): Tile => ({
+    id,
+    name: tileName(id, name),
+    label: `Buy ${name.toLowerCase()} for ${price} gold${stock ? `, ${stock} in your inventory` : ''}`,
+    price: `${stock ? `×${stock} ` : ''}${price} 💰`,
+    key: `buy-${id}`,
+    command: `buy ${id}`,
+    tone: price > gear.gold ? 'dim' : undefined,
+  })
+  const pets = [
+    ...(gear.egg_price !== undefined ? [stocked('egg', 'Mystery egg', gear.egg_price, 0)] : []),
+    ...(gear.food ?? []).map(f => stocked(f.id, f.name, f.price, f.stock)),
+  ]
+  const potions = (gear.potions ?? []).map(p => stocked(p.id, p.name, p.price, p.stock))
+  return [
+    { head: '⚒ LOOKS', tiles: looks },
+    { head: '🥚 PETS AND FOOD', tiles: pets },
+    { head: '🧪 POTIONS', tiles: potions },
+  ].filter(g => g.tiles.length > 0)
+}
+
+// The picture as Text: on a terminal two pixels a cell, a half block in the
+// top one's colour over the bottom one's, so a Button can hold it and the
+// whole tile is the press.
+function pixelText(els: Els, id: string): RenderChildren[] {
+  const { Text } = els
+  const art = wareArt(id)
+  if (!art) return [' '.repeat(WARE_PIXELS) + '\n']
+  return halfBlocks(art).flatMap((runs, row) => [
+    ...runs.map((r, i) =>
+      r.fg ? (
+        <Text key={`${id}-${row}-${i}`} color={r.fg} backgroundColor={r.bg ?? undefined}>
+          {r.glyph.repeat(r.n)}
+        </Text>
+      ) : (
+        ' '.repeat(r.n)
+      ),
+    ),
+    '\n',
+  ])
+}
+
+function tileView($: EngineInterface, els: Els, t: Tile) {
+  const { Box, Text, Button, Svg, TileButton } = els
+  const priceStyle = t.tone === 'on' ? { color: 'success' as const } : { dimColor: t.tone === 'dim' }
+  const border = {
+    key: `tile-${t.id}`,
+    flexDirection: 'column' as const,
+    flexShrink: 0,
+    borderStyle: 'round',
+    borderColor: t.tone === 'on' ? ('success' as const) : undefined,
+    borderDimColor: t.tone === 'dim',
+    hover: { borderColor: 'claude' as const },
+  }
+  if (TileButton) {
+    const words = [
+      <Text key={`${t.id}-name`} bold>
+        {centered(t.name, WARE_PIXELS)}
+      </Text>,
+      '\n',
+      <Text key={`${t.id}-price`} {...priceStyle}>
+        {centered(t.price, WARE_PIXELS)}
+      </Text>,
+    ]
+    const face = [...pixelText(els, t.id), ...words]
+    return (
+      <Box {...border} width={WARE_PIXELS + 2}>
+        {t.command ? (
+          <TileButton key={t.key} label={t.label} plain onPress={() => press($, t.command!)}>
+            {face}
+          </TileButton>
+        ) : (
+          <Text>{face}</Text>
+        )}
       </Box>
-      {isOpen && (
-        <Box flexDirection="column" paddingLeft={4}>
-          {body()}
-        </Box>
+    )
+  }
+  const art = wareArt(t.id)
+  return (
+    <Box {...border} alignItems="center" paddingX={1}>
+      {Svg && art && <Svg source={svg(art, 4)} alt={t.name} />}
+      <Text bold>{t.name}</Text>
+      {t.command ? (
+        <Button key={t.key} label={t.price} dimColor={t.tone === 'dim'} onPress={() => press($, t.command!)} />
+      ) : (
+        <Text {...priceStyle}>{t.price}</Text>
       )}
     </Box>
   )
 }
 
-function shopView($: EngineInterface, els: Els, gear: Armory, sign: RenderChildren, opened: readonly string[]) {
-  const { Box, Text, Button } = els
-  const wares = gear.wares.filter(w => w.price > 0)
-  const action = (w: Ware) =>
-    w.equipped ? (
-      <Text color="success">◆ equipped</Text>
-    ) : w.owned ? (
-      <Button key={`equip-${w.id}`} label="Equip" onPress={() => press($, `equip ${w.id}`)} />
-    ) : (
-      <Button
-        key={`buy-${w.id}`}
-        label={`Buy ${w.price} 💰`}
-        dimColor={w.price > gear.gold}
-        onPress={() => press($, `buy ${w.id}`)}
-      />
-    )
-  const slots = [...new Set(wares.map(w => w.slot))]
-  const food = gear.food ?? []
+function shopView($: EngineInterface, els: Els, gear: Armory, sign: RenderChildren) {
+  const { Box, Text } = els
   return (
     <Box flexDirection="column">
       {sign}
-      {slots.map(slot => {
-        const shelfWares = wares.filter(w => w.slot === slot)
-        const forSale = shelfWares.filter(w => !w.owned).length
-        const summary = forSale ? `${forSale} for sale` : 'all owned'
-        return shelf($, els, slot, shelfWares[0]!.section, opened.includes(slot), summary, () =>
-          shelfWares.map(w => wareRow(els, w, action(w))),
-        )
-      })}
-      {gear.egg_price !== undefined &&
-        shelf($, els, 'pets', '🥚 PETS', opened.includes('pets'), `mystery egg ${gear.egg_price} 💰`, () =>
-          hang(
-            els,
-            'ware-egg',
-            '🥚',
-            'Mystery egg · hatches one of ten pets',
-            {},
-            <Button
-              key="buy-egg"
-              label={`Buy ${gear.egg_price} 💰`}
-              dimColor={gear.egg_price! > gear.gold}
-              onPress={() => press($, 'buy egg')}
-            />,
-          ),
-        )}
-      {food.length > 0 &&
-        shelf(
-          $,
-          els,
-          'food',
-          '🍖 FOOD',
-          opened.includes('food'),
-          `in inventory ${food.map(f => `${f.emoji}${f.stock}`).join(' ')}`,
-          () =>
-            food.map(f =>
-              hang(
-                els,
-                `ware-${f.id}`,
-                f.emoji,
-                `${f.name} · +${f.full} full, +${f.joy} joy`,
-                {},
-                <Box columnGap={1}>
-                  {f.stock > 0 && <Text dimColor>×{f.stock}</Text>}
-                  <Button
-                    key={`buy-${f.id}`}
-                    label={`Buy ${f.price} 💰`}
-                    dimColor={f.price > gear.gold}
-                    onPress={() => press($, `buy ${f.id}`)}
-                  />
-                </Box>,
-              ),
-            ),
-        )}
-      <Box marginTop={1}>
-        <Text dimColor wrap="wrap">
-          ⚜ Plaques: engrave a finished quest from Trophies, {gear.plaque_price} 💰 each.
-        </Text>
-      </Box>
+      {shopTiles(gear).map(g => (
+        <Box key={`group-${g.head}`} flexDirection="column" marginBottom={1}>
+          <Text bold>{g.head}</Text>
+          <Box flexWrap="wrap" columnGap={1}>
+            {g.tiles.map(t => tileView($, els, t))}
+          </Box>
+        </Box>
+      ))}
+      <Text dimColor wrap="wrap">
+        ⚜ Plaques: engrave a finished quest from Trophies, {gear.plaque_price} 💰 each.
+      </Text>
     </Box>
   )
 }
@@ -674,10 +765,13 @@ const hearts = (joy: number) => {
 // One pet: it, moving, beside how it is and what you can do for it.
 function petCard($: EngineInterface, els: Els, pet: Pet, food: Food[], bar: readonly [string, string], surface: string) {
   const { Box, Text, Button, Input, Svg } = els
+  if (hatchedAt.get(pet.id) === HATCHING && surface === 'terminal') hatchedAt.set(pet.id, frame)
+  const hatched = hatchedAt.get(pet.id)
   const pose = (t: number) => ({
     joy: pet.joy,
     hungry: pet.hungry,
     sincePetted: pettedAt.has(pet.id) ? t - seconds(pettedAt.get(pet.id)!) : -1,
+    sinceHatched: hatched !== undefined && hatched !== HATCHING ? t - seconds(hatched) : -1,
   })
   const sprite =
     animated(els, `sprite-${pet.id}`, PET_COLUMNS, PET_ROWS, t => petFrame(pet.species, t, pose(t), pet.id)) ??
@@ -739,6 +833,7 @@ function petsView($: EngineInterface, els: Els, gear: Armory, surface: string) {
   const { Box, Text, Button } = els
   const pets = gear.pets ?? []
   const food = gear.food ?? []
+  const health = gear.potions?.find(p => p.id === 'health')
   if (pets.length === 0) {
     return (
       <Box flexDirection="column">
@@ -761,8 +856,18 @@ function petsView($: EngineInterface, els: Els, gear: Armory, surface: string) {
       <Text dimColor wrap="wrap">
         {`food in inventory ${food.map(f => `${f.emoji} ${f.stock}`).join('  ')}`}
       </Text>
+      {health && health.stock > 0 && (
+        <Box marginTop={1}>
+          <Button
+            key="drink-health"
+            label={`Drink ${health.look} ×${health.stock}: heal every pet`}
+            onPress={() => press($, 'drink health')}
+          />
+        </Box>
+      )}
       <Box marginBottom={1} />
-      {pets.map(pet => petCard($, els, pet, food, gear.look.bar, surface))}
+      {/* newest first, so one hatching is on top, not below the fold */}
+      {[...pets].sort((a, b) => b.id - a.id).map(pet => petCard($, els, pet, food, gear.look.bar, surface))}
     </Box>
   )
 }
@@ -824,6 +929,23 @@ function inventoryView($: EngineInterface, els: Els, gear: Armory) {
           {(gear.food ?? [])
             .filter(f => f.stock > 0)
             .map(f => hang(els, `food-${f.id}`, f.emoji, f.name, {}, <Text dimColor>×{f.stock} · feed from Pets</Text>))}
+        </Box>
+      )}
+      {(gear.potions ?? []).some(p => p.stock > 0) && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold>🧪 POTIONS</Text>
+          {(gear.potions ?? [])
+            .filter(p => p.stock > 0)
+            .map(p =>
+              potionRow(
+                els,
+                p,
+                <Box columnGap={1}>
+                  <Text dimColor>×{p.stock}</Text>
+                  <Button key={`drink-${p.id}`} label="Drink" onPress={() => press($, `drink ${p.id}`)} />
+                </Box>,
+              ),
+            )}
         </Box>
       )}
       {owned.length === 0 && <Text dimColor>Only the clothes on your back. The Shop has wares.</Text>}
@@ -954,7 +1076,7 @@ export const register: Register = on => {
     if (e.surface === 'terminal') moving = new Map()
 
     let body
-    if (page === 'shop' && gear) body = shopView($, els, gear, signView(els, width, rows), await read($, shopOpen))
+    if (page === 'shop' && gear) body = shopView($, els, gear, signView(els, width, rows))
     else if (page === 'pets' && gear) body = petsView($, els, gear, e.surface)
     else if (page === 'inventory' && gear) body = inventoryView($, els, gear)
     else if (page === 'trophies' && gear) body = trophiesView($, els, gear, state, await $.session.id())

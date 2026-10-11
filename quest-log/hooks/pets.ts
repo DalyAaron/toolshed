@@ -206,11 +206,96 @@ export type PetPose = {
   hungry: boolean
   // seconds since it was last petted; hearts rise for the first two
   sincePetted: number
+  // seconds since it hatched, -1 for long ago; for HATCH_SECONDS it's an egg
+  sinceHatched?: number
+}
+
+// Hatching: the egg sits and wobbles, cracks across its middle, its top flies
+// off with the pet peeking out of the bottom half, then that drops away and
+// the pet stands there in a shower of sparkles.
+export const HATCH_SECONDS = 4
+const WOBBLE_UNTIL = 1.2
+const CRACK_UNTIL = 2.4
+const LID_UNTIL = 2.9
+const SHELL = 0xf4ead0
+const SHELL_SHADE = 0xd9cba6
+const SPECKLE = 0xb07a4a
+const CRACK = 0x5a3b1e
+const SPARKLE = [0xffd24a, 0xfff6c8, 0x9be8ff]
+const EGG = [
+  '....ee....',
+  '...eeee...',
+  '..eeseeE..',
+  '..eeeeeE..',
+  '.eeeeeseE.',
+  '.eseeeeeE.',
+  '.eeeeeeeE.',
+  '.eeeeseeE.',
+  '.eeeeeeeE.',
+  '..eeeeeE..',
+  '..eeseeE..',
+  '...eeEE...',
+]
+const EGG_LEFT = 2
+const EGG_TOP = PET_ROWS * 2 - EGG.length
+// where the shell splits, per egg column: a zigzag across row 5 and 6
+const crackRow = (x: number) => 5 + (x % 2)
+
+// The egg's pixels, split: `part` the top (above the crack), the bottom, or
+// both; `cracked` how much of the crack shows, 0 to 1, left to right.
+function drawEgg(c: Canvas, dx: number, dy: number, part: 'all' | 'top' | 'bottom', cracked: number): void {
+  EGG.forEach((row, y) =>
+    Array.from(row).forEach((ch, x) => {
+      if (ch === '.') return
+      const above = y < crackRow(x)
+      if ((part === 'top' && !above) || (part === 'bottom' && above)) return
+      let colour = ch === 's' ? SPECKLE : ch === 'E' ? SHELL_SHADE : SHELL
+      if (y === crackRow(x) && x < Math.round(cracked * row.length)) colour = CRACK
+      c.set(EGG_LEFT + x + dx, EGG_TOP + y + dy, colour)
+    }),
+  )
+}
+
+// Hatching at `s` seconds in (0 to HATCH_SECONDS); `pet` draws the pet at a time.
+function hatchFrame(s: number, t: number, pet: () => Canvas): Canvas {
+  if (s < CRACK_UNTIL) {
+    const c = new Canvas(PET_COLUMNS, PET_ROWS * 2)
+    // a rock now and then, quicker and more often as it goes
+    const speed = s < WOBBLE_UNTIL ? 6 : 14
+    const rocking = s < WOBBLE_UNTIL ? Math.sin(s * 2.5) > 0.4 : true
+    const dx = rocking ? Math.round(Math.sin(t * speed)) : 0
+    drawEgg(c, dx, 0, 'all', s < WOBBLE_UNTIL ? 0 : (s - WOBBLE_UNTIL) / (CRACK_UNTIL - WOBBLE_UNTIL))
+    return c
+  }
+  const c = pet()
+  if (s < LID_UNTIL) {
+    // the lid flies up and left; the pet peeks out of the bottom half
+    const u = (s - CRACK_UNTIL) / (LID_UNTIL - CRACK_UNTIL)
+    drawEgg(c, -Math.round(u * 4), -Math.round(u * 7), 'top', 1)
+    drawEgg(c, 0, 0, 'bottom', 1)
+    return c
+  }
+  // the bottom half drops away; sparkles burst out from the middle and fade
+  const u = (s - LID_UNTIL) / (HATCH_SECONDS - LID_UNTIL)
+  if (u < 0.5) drawEgg(c, 0, Math.round(u * 2 * 8), 'bottom', 1)
+  const reach = 2 + u * 6
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 + 0.3
+    const x = PET_COLUMNS / 2 + Math.cos(angle) * reach
+    const y = PET_ROWS + 1 + Math.sin(angle) * reach * 0.8
+    if (u < 0.85 || i % 2 === 0) c.set(x, y, SPARKLE[i % SPARKLE.length]!)
+  }
+  return c
 }
 
 // The pet at `t` seconds. Each pet keeps its own rhythm (`seed`), so a pen of
 // them doesn't bob in step.
 export function petFrame(species: string, t: number, pose: PetPose, seed = 0): Canvas {
+  const s = pose.sinceHatched ?? -1
+  if (s >= 0 && s < HATCH_SECONDS) {
+    // out of the egg it's overjoyed, whatever its joy says
+    return hatchFrame(s, t, () => petFrame(species, t, { ...pose, joy: 100, hungry: false, sinceHatched: -1 }, seed))
+  }
   const sprite = SPRITES[species] ?? SPRITES.slime!
   const c = new Canvas(PET_COLUMNS, PET_ROWS * 2)
   const happy = pose.joy >= 65

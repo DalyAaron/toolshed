@@ -62,6 +62,8 @@ export type Pet = {
   petted: number
 }
 export type Food = { id: string; name: string; emoji: string; price: number; full: number; joy: number; stock: number }
+// `look` is the potion's coloured dot; `color` is red, green or yellow.
+export type Potion = { id: string; name: string; color: string; look: string; note: string; price: number; stock: number }
 export type Armory = {
   gold: number
   xp: number
@@ -74,6 +76,12 @@ export type Armory = {
   egg_price?: number
   food?: Food[]
   pets?: Pet[]
+  // absent from a quest.py older than potions
+  potions?: Potion[]
+  // when the xp and gold boosts wear off, in epoch seconds; 0 for none
+  boosts?: { xp: number; gold: number }
+  // what a boost multiplies by
+  boost_times?: number
 }
 export type View = 'log' | 'shop' | 'inventory' | 'trophies' | 'pets'
 
@@ -90,8 +98,6 @@ declare module 'claude-code' {
       armory: Armory | null
       // which page the pane shows
       view: View
-      // the shop's shelves the person has opened; all start closed
-      shopOpen: string[]
     }
   }
 }
