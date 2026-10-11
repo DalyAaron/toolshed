@@ -264,6 +264,7 @@ test('the log page wears what is equipped: banner, rank, gold, bar', async ($, o
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'quest-log', surface, component: 'Pane', requestId: 'quests', props: PANE })
     expect(await pane.find({ text: /⚔ Ship It/ })).toBeDefined()
+    expect(await pane.find({ text: /🚩/ })).toBeUndefined()
     // the purse is a Client on both surfaces
     expect(await pane.find({ in: 'purse', text: '🏅 Journeyman' })).toBeDefined()
     expect(await pane.find({ in: 'purse', text: ' · 320 xp' })).toBeDefined()
@@ -274,6 +275,17 @@ test('the log page wears what is equipped: banner, rank, gold, bar', async ($, o
     expect(await pane.find({ text: /^[●○]{8} 681 to Artificer$/ })).toBeDefined()
     await pane.unmount()
   }
+})
+
+test('a purse put back after an outside edit is flagged in the header', async ($, on) => {
+  const clock = mock.clock(on)
+  const { sell } = world(on, ON)
+  sell({ ...ARMORY, tampered: true }, 'Done.')
+  await $.session.start({ cwd: '/proj/sub', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'terminal', component: 'Pane', requestId: 'quests', props: PANE })
+  expect((await pane.find({ type: 'Text', text: /🚩 wallet.json was edited outside quest-log/ }))?.props.color).toBe('warning')
+  await pane.unmount()
 })
 
 test('shop: Buy runs /quests buy through quest.py and shows its answer', async ($, on) => {

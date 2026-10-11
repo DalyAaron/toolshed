@@ -1,12 +1,12 @@
 {
-  "name": "claude-todo",
+  "name": "todo",
   "displayName": "/todo",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Park an idea mid-task without derailing what you're doing. Captures the branch and commit you were on, and brings the todo back to you later.",
   "author": {
     "name": "Aaron Daly"
   },
-  "homepage": "https://github.com/DalyAaron/toolshed/tree/main/claude-todo",
+  "homepage": "https://github.com/DalyAaron/toolshed/tree/main/todo",
   "license": "MIT",
   "keywords": [
     "todo",

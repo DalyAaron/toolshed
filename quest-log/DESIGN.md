@@ -456,12 +456,12 @@ user wanted to decide on.
 
 The script writes `todo.py`'s store directly, using its documented schema,
 because plugins can't call one another. That couples quest-log to the
-claude-todo store format. Both live in this repo, so a schema change there
+todo plugin's store format. Both live in this repo, so a schema change there
 must update `cmd_to_todo` in the same commit. Handed-off todos carry
 `"source": "quest-log"`, which todo.py ignores.
 
 Two checks keep that honest. At runtime, `cmd_to_todo` refuses to write into a
-store that lacks the keys it relies on, and says claude-todo has probably
+store that lacks the keys it relies on, and says the todo plugin has probably
 changed its schema. In `tests/`, a test loads `todo.py` itself, creates a todo
 the native way, and fails if todo.py's items have fields quest-log doesn't
 write, or if todo.py can't list what quest-log wrote.

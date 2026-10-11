@@ -32,7 +32,7 @@ cared. Each git worktree counts as its own project —
 
 ```bash
 claude plugin marketplace add DalyAaron/toolshed
-claude plugin install claude-todo@toolshed
+claude plugin install todo@toolshed
 ```
 
 Then start a new Claude Code session — the reminder hooks load at startup — and
@@ -46,7 +46,7 @@ To update later:
 
 ```bash
 claude plugin marketplace update toolshed
-claude plugin update claude-todo@toolshed
+claude plugin update todo@toolshed
 ```
 
 Or, inside a Claude Code session, run `/plugin` and update the marketplace and
@@ -59,7 +59,7 @@ loads in your next session.
 ```bash
 git clone https://github.com/DalyAaron/toolshed ~/code/toolshed
 claude plugin marketplace add ~/code/toolshed
-claude plugin install claude-todo@toolshed
+claude plugin install todo@toolshed
 ```
 
 `marketplace add` takes a path as happily as a GitHub repo, so your edits to the
@@ -288,7 +288,7 @@ inside your repo. Each Claude Code profile keeps its own separate todos; set
 ## Uninstall
 
 ```bash
-claude plugin uninstall claude-todo
+claude plugin uninstall todo
 ```
 
 That removes the skill and its hooks. Your parked todos are stored outside the

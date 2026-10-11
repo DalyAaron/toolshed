@@ -443,6 +443,11 @@ function header(els: Els, gear: Armory | null) {
         {meter(fraction, gear.look.bar, 8)} {toNext}
       </Text>
       {boostsLine(els, gear)}
+      {gear.tampered && (
+        <Text color="warning" wrap="wrap">
+          🚩 wallet.json was edited outside quest-log: the purse was put back
+        </Text>
+      )}
     </Box>
   )
 }

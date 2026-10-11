@@ -9,6 +9,8 @@ hooks feed in the user's prompts and the files Claude edits, and `/quests`
 renders the result. See DESIGN.md for why it is shaped this way.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import random
@@ -267,6 +269,54 @@ def wallet_path() -> Path:
     return store_base() / "wallet.json"
 
 
+WALLET_KEY = ".wallet.key"
+WALLET_SIGNED = ".wallet.signed.json"
+TAMPER_SHOWN_DAYS = 7
+
+
+def wallet_key(create: bool) -> "bytes | None":
+    path = store_base() / WALLET_KEY
+    try:
+        return bytes.fromhex(path.read_text().strip())
+    except (OSError, ValueError):
+        pass
+    if not create:
+        return None
+    key = os.urandom(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return wallet_key(False)
+    with os.fdopen(fd, "w") as out:
+        out.write(key.hex())
+    return key
+
+
+def signature(purse: dict, key: bytes) -> str:
+    body = json.dumps({k: v for k, v in purse.items() if k != "sig"},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hmac.new(key, body.encode(), hashlib.sha256).hexdigest()
+
+
+def signed_by(purse: dict, key: "bytes | None") -> bool:
+    return bool(key) and isinstance(purse.get("sig"), str) and hmac.compare_digest(purse["sig"], signature(purse, key))
+
+
+def verified(raw: dict) -> "tuple[dict, bool]":
+    if not raw:
+        return raw, False
+    key = wallet_key(False)
+    if signed_by(raw, key):
+        return raw, False
+    copy = read_json(store_base() / WALLET_SIGNED)
+    if key is None and "sig" not in raw and not copy:
+        return raw, False
+    if signed_by(copy, key):
+        return copy, True
+    return raw, True
+
+
 def read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text())
@@ -294,7 +344,8 @@ def wallet() -> dict:
     except OSError:
         stamp = 0
     if _WALLET is None or _WALLET[0] != stamp:
-        purse = read_json(path)
+        purse, tampered = verified(read_json(path))
+        purse = dict(purse)
         purse["gold"] = count(purse.get("gold"))
         if "xp" not in purse:  # a purse from before XP: nothing had been spent, so gold is what was earned
             purse["xp"] = purse["gold"] * XP_OBJECTIVE // GOLD_OBJECTIVE
@@ -304,14 +355,29 @@ def wallet() -> dict:
             if not isinstance(purse.get(key), type(empty)):
                 purse[key] = empty
         _WALLET = (stamp, purse)
+        if tampered:
+            purse["tampered_at"] = now()
+            save_wallet(purse)
     return _WALLET[1]
 
 
 def save_wallet(purse: dict) -> None:
     global _WALLET
     purse["updated"] = now()
+    purse.pop("sig", None)
+    purse["sig"] = signature(purse, wallet_key(True))
+    write_json(store_base() / WALLET_SIGNED, purse)
     write_json(wallet_path(), purse)
     _WALLET = (wallet_path().stat().st_mtime_ns, purse)
+
+
+def tamper_line() -> "str | None":
+    at = wallet().get("tampered_at")
+    try:
+        recent = time.time() - time.mktime(time.strptime(at[:19], "%Y-%m-%dT%H:%M:%S")) < TAMPER_SHOWN_DAYS * 86400
+    except (TypeError, ValueError):
+        return None
+    return " 🚩 wallet.json was edited outside quest-log: the purse was put back" if recent else None
 
 
 def gold() -> int:
@@ -784,7 +850,8 @@ def render_rpg(state: dict, live: "str | None" = None, all_done: bool = False) -
     tracked = state.get("tracked")
     rumors = [r for r in state["rumors"] if not r.get("quest") and not r.get("todo")]
     project = Path(state.get("project") or project_root()).name
-    out = [rule(title_banner("📜 QUEST LOG"), f"{project} · turn {state.get('turn', 0)}"), rank_row(), ""]
+    out = [rule(title_banner("📜 QUEST LOG"), f"{project} · turn {state.get('turn', 0)}"), rank_row(),
+           *filter(None, [tamper_line()]), ""]
 
     waiting = [q for q in quests if q["status"] == "awaiting"]
     active = sorted((q for q in quests if q["status"] == "active"),
@@ -1248,7 +1315,7 @@ def cmd_rumor(state: dict, pos: "list[str]", flags: "dict[str, list[str]]") -> s
 # ------------------------------------------------------------ /todo handoff
 
 def todo_store_path(root: str, sid: str) -> Path:
-    """Where claude-todo keeps this session's todos. Mirrors todo.py's rules."""
+    """Where the todo plugin keeps this session's todos. Mirrors todo.py's rules."""
     override = os.environ.get("CLAUDE_TODO_DIR")
     base = Path(override) if override else config_dir() / "todos"
     return base / slug(root) / f"{sid}.json"
@@ -1308,7 +1375,7 @@ def cmd_to_todo(state: dict, ref: str) -> str:
         return f"/todo's store at {path} is unreadable; nothing sent."
     if todos is not None and not todo_schema_ok(todos):
         return (f"/todo's store at {path} isn't in the format quest-log knows; nothing sent. "
-                "claude-todo has probably changed its schema: update quest-log.")
+                "the todo plugin has probably changed its schema: update quest-log.")
     if todos is None:
         todos = {"session_id": sid, "project": root, "created": now(), "muted": False,
                  "turns": 0, "last_nudge_turn": 0, "last_nudge_at": time.time(),
@@ -1333,7 +1400,7 @@ def cmd_to_todo(state: dict, ref: str) -> str:
         if state.get("tracked") == entry["id"]:
             retrack(state)
     logged(state, f"{glyphs()['t_todo']}: {text} (#{todo['id']})", "todo")
-    hint = " (no /todo store existed yet — install claude-todo to see it)" if fresh_store else ""
+    hint = " (no /todo store existed yet — install todo@toolshed to see it)" if fresh_store else ""
     return f"Sent {what} to /todo #{todo['id']}{hint}."
 
 
@@ -1413,7 +1480,7 @@ def ware_row(mark: str, item: str, name: str, status: str) -> str:
 
 def render_shop() -> str:
     purse = wallet()
-    out = [rule("TRINKETS AND TRONKETS 🏆", f"purse {purse['gold']} {GOLD}"), ""]
+    out = [rule("TRINKETS AND TRONKETS 🏆", f"purse {purse['gold']} {GOLD}"), *filter(None, [tamper_line()]), ""]
     out += list(MERCHANT)
     out += ["", f'           "{random.choice(SAYINGS)}"', ""]
     for slot, head in SHOP_SECTIONS:
@@ -1460,7 +1527,7 @@ def render_shop() -> str:
 
 def render_inventory() -> str:
     purse = wallet()
-    out = [rule("🎒 INVENTORY", f"{purse['gold']} {GOLD}"), rank_row(), ""]
+    out = [rule("🎒 INVENTORY", f"{purse['gold']} {GOLD}"), rank_row(), *filter(None, [tamper_line()]), ""]
     for slot, head in SHOP_SECTIONS:
         items = [i for i, spec in SHOP.items() if spec["slot"] == slot and owns(i)]
         if not items:
@@ -1500,7 +1567,7 @@ def render_inventory() -> str:
         if boosts:
             out.append(f"   {boosts}")
         out.append("")
-    if len(out) == 3:
+    if len(out) == 3 + bool(tamper_line()):
         out += ["   Only the clothes on your back. `/quests shop` has wares.", ""]
     out.append(rule("/quests equip <item> · /quests unequip <item>", "", top=False))
     return "\n".join(out)
@@ -1922,6 +1989,7 @@ def armory() -> dict:
     bar = look("bar")
     return {
         "gold": purse["gold"], "xp": purse["xp"],
+        "tampered": bool(tamper_line()),
         "rank": {"name": name, "floor": floor,
                  "next": {"name": up[0], "floor": up[1]} if up else None},
         "look": {"bar": list(bar), "trophy": look("trophy"), "banner": look("banner")},
@@ -2843,7 +2911,53 @@ def statusline(payload: dict) -> str:
     return render_statusline(load(path, sid, root))
 
 
+GUARD_REASON = ("quest-log: the purse (quests/wallet.json, its signed copy and key) is the user's, "
+                "written only by quest.py. Gold comes from checking off objectives and turning in "
+                "quests; it's spent through /quests. Don't edit or recreate it.")
+
+
+def guarded(path: str, reading: bool = False) -> bool:
+    if not path:
+        return False
+    target = Path(os.path.expanduser(path))
+    if reading:
+        return target.name == WALLET_KEY
+    if target.name in (WALLET_KEY, WALLET_SIGNED):
+        return True
+    if target.name != "wallet.json":
+        return False
+    try:
+        same = target.resolve().parent == store_base().resolve()
+    except OSError:
+        same = False
+    return same or (target.parent.name == "quests" and target.parent.parent.name.startswith(".claude"))
+
+
+WALLET_IN_COMMAND = re.compile(r"(\.claude[\w.-]*|CLAUDE_CONFIG_DIR\}?)/quests/wallet\.json|CLAUDE_QUESTS_DIR\}?/wallet\.json")
+
+
+def guards_command(command: str) -> bool:
+    if WALLET_KEY in command or WALLET_SIGNED in command:
+        return True
+    return str(wallet_path()) in command or bool(WALLET_IN_COMMAND.search(command))
+
+
+def hook_guard(payload: dict) -> None:
+    tool = payload.get("tool_name") or ""
+    args = payload.get("tool_input") or {}
+    if tool == "Bash":
+        hit = guards_command(str(args.get("command") or ""))
+    else:
+        path = str(args.get("file_path") or args.get("notebook_path") or args.get("path") or "")
+        hit = guarded(path, reading=tool == "Read")
+    if hit:
+        emit(None, extra={"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                                 "permissionDecision": "deny",
+                                                 "permissionDecisionReason": GUARD_REASON}})
+
+
 HOOKS = {
+    "hook-guard": hook_guard,
     "hook-session-start": hook_session_start,
     "hook-prompt": hook_prompt,
     "hook-post-tool": hook_post_tool,

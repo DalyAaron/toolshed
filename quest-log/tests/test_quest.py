@@ -23,7 +23,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent
 QUEST = PLUGIN / "skills" / "quests" / "quest.py"
-TODO = PLUGIN.parent / "claude-todo" / "skills" / "todo" / "todo.py"
+TODO = PLUGIN.parent / "todo" / "skills" / "todo" / "todo.py"
 
 
 def run(cmd, cwd, env, stdin=""):
@@ -675,7 +675,7 @@ class TodoHandoff(QuestTest):
         store.write_text(json.dumps({"items": []}))
         self.assertIn("isn't in the format", self.q("to-todo", "1"))
 
-    @unittest.skipUnless(TODO.exists(), "claude-todo not beside quest-log")
+    @unittest.skipUnless(TODO.exists(), "the todo plugin not beside quest-log")
     def test_schema_matches_todo_py(self):
         """cmd_to_todo writes todo.py's store directly; fail loudly if it drifts."""
         self.start()
@@ -758,6 +758,9 @@ class Shop(QuestTest):
     def fund(self, gold, **extra):
         path = self.tmp / "quests" / "wallet.json"
         path.parent.mkdir(parents=True, exist_ok=True)
+        for name in (".wallet.key", ".wallet.signed.json"):
+            (path.parent / name).unlink(missing_ok=True)
+        extra.pop("sig", None)
         path.write_text(json.dumps(dict({"gold": gold, "xp": 0}, **extra)))
 
     def frame(self, out):
@@ -1056,6 +1059,78 @@ class Shop(QuestTest):
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertNotEqual(out.returncode, 0)
         self.assertEqual(self.purse()["gold"], 50)
+
+
+class Purse(QuestTest):
+    def store(self, name="wallet.json"):
+        return self.tmp / "quests" / name
+
+    def earn_some(self):
+        self.start()
+        self.q("check", "1.1", "1.2")
+        return json.loads(self.store().read_text())
+
+    def test_a_signed_purse_with_its_key_and_copy(self):
+        purse = self.earn_some()
+        self.assertEqual(purse["gold"], 2)
+        self.assertRegex(purse["sig"], r"^[0-9a-f]{64}$")
+        self.assertEqual(json.loads(self.store(".wallet.signed.json").read_text()), purse)
+        self.assertEqual(self.store(".wallet.key").stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("🚩", self.quests())
+
+    def test_hand_edited_gold_is_put_back_and_flagged(self):
+        purse = self.earn_some()
+        for edit in (dict(purse, gold=9999), {k: v for k, v in dict(purse, gold=9999).items() if k != "sig"}):
+            self.store().write_text(json.dumps(edit))
+            log = self.quests()
+            self.assertIn(" 🚩 wallet.json was edited outside quest-log: the purse was put back", log)
+            self.assertIn(" 2 💰 ", log)
+            back = json.loads(self.store().read_text())
+            self.assertEqual(back["gold"], 2)
+            self.assertIn("tampered_at", back)
+        self.assertTrue(json.loads(self.q("armory"))["tampered"])
+        # and what's earned after counts as usual
+        self.q("turn-in", "1")
+        self.assertEqual(json.loads(self.store().read_text())["gold"], 4)
+
+    def test_a_purse_from_before_signing_is_trusted_once_then_signed(self):
+        self.store().parent.mkdir(parents=True)
+        self.store().write_text(json.dumps({"gold": 50, "xp": 500}))
+        self.assertIn("50 💰", self.quests("shop"))
+        self.assertNotIn("🚩", self.quests())
+        self.quests("buy double")
+        self.assertIn("sig", json.loads(self.store().read_text()))
+        self.assertTrue(self.store(".wallet.key").exists())
+
+    def guard(self, tool, **args):
+        out = self.hook("guard", {"tool_name": tool, "tool_input": args})
+        return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+    def test_claude_is_kept_off_the_purse(self):
+        wallet = str(self.store())
+        home_wallet = os.path.expanduser("~/.claude/quests/wallet.json")
+        for tool, args in [("Edit", {"file_path": wallet}), ("Write", {"file_path": home_wallet}),
+                           ("MultiEdit", {"file_path": wallet}), ("Write", {"file_path": str(self.store(".wallet.signed.json"))}),
+                           ("Read", {"file_path": str(self.store(".wallet.key"))}),
+                           ("Bash", {"command": f"cat {wallet}"}),
+                           ("Bash", {"command": "jq '.gold = 9999' ~/.claude-me/quests/wallet.json > /tmp/w"}),
+                           ("Bash", {"command": 'python3 -c "print(open(\'$CLAUDE_CONFIG_DIR/quests/wallet.json\').read())"'}),
+                           ("Bash", {"command": "cat .wallet.key"})]:
+            self.assertEqual(self.guard(tool, **args), "deny", (tool, args))
+        out = self.hook("guard", {"tool_name": "Edit", "tool_input": {"file_path": wallet}})
+        self.assertIn("Gold comes from checking off objectives", out["hookSpecificOutput"]["permissionDecisionReason"])
+        # reading the purse is fine, and so is working on quest-log itself
+        for tool, args in [("Read", {"file_path": wallet}),
+                           ("Bash", {"command": "grep -n wallet.json skills/quests/quest.py"}),
+                           ("Bash", {"command": "quest check 1.1"}),
+                           ("Edit", {"file_path": str(self.repo / "wallet.json")}),
+                           ("Edit", {"file_path": str(QUEST)})]:
+            self.assertIsNone(self.guard(tool, **args), (tool, args))
+
+    def test_the_guard_holds_with_reminders_off(self):
+        out = self.hook("guard", {"tool_name": "Edit", "tool_input": {"file_path": str(self.store())}},
+                        CLAUDE_QUESTS_REMINDERS="off")
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 class Tips(QuestTest):

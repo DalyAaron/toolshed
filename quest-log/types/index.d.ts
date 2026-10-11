@@ -84,6 +84,7 @@ export type Armory = {
   boosts?: { xp: number; gold: number }
   // what a boost multiplies by
   boost_times?: number
+  tampered?: boolean
 }
 export type View = 'log' | 'shop' | 'inventory' | 'trophies' | 'pets'
 
