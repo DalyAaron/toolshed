@@ -881,9 +881,33 @@ class Shop(QuestTest):
         # weighted: over many eggs every species turns up, the commonest most
         import collections, random
         random.seed(1)
-        seen = collections.Counter(mod.hatch() for _ in range(3000))
+        seen = collections.Counter(mod.hatch()[0] for _ in range(3000))
         self.assertEqual(set(seen), set(mod.SPECIES))
         self.assertGreater(seen["duck"], seen["dragon"] * 4)
+
+    def test_some_hatches_come_out_shiny(self):
+        self.fund(2000)
+        self.quests("buy egg")
+        self.quests("buy egg")
+        out = self.quests("hatch 1", CLAUDE_QUESTS_SEED="4")
+        self.assertTrue(out.startswith("The egg cracks... it's a ✨ shiny Frog 🐸 (common)! Meet Pip, pet #1."), out)
+        self.assertIn("it's an Owl 🦉", self.quests("hatch 2", CLAUDE_QUESTS_SEED="7"))
+        pets = self.purse()["pets"]
+        self.assertTrue(pets[0]["shiny"])
+        self.assertNotIn("shiny", pets[1])  # a plain pet's record is as it always was
+        pen = self.quests("pets")
+        self.assertIn("✨ shiny Frog · common", pen)
+        self.assertIn("Owl · uncommon", pen)
+        self.assertNotIn("shiny Owl", pen)
+        data = json.loads(self.q("armory"))["pets"]
+        self.assertEqual({d["name"]: d["shiny"] for d in data}, {"Pip": True, "Hoot": False})
+        # four in ten, near enough, whatever the species
+        import random
+        mod = SessionStart.module(self)
+        self.assertEqual(mod.SHINY_CHANCE, 0.4)
+        random.seed(1)
+        shiny = sum(mod.hatch()[1] for _ in range(3000))
+        self.assertTrue(1080 < shiny < 1320, shiny)
 
     def test_food_is_bought_a_portion_at_a_time_and_fed(self):
         self.fund(10, pets=[self.pet(species="cat", full=40, joy=40)])
@@ -992,6 +1016,21 @@ class Shop(QuestTest):
         self.fund(0)
         self.assertIn("The pen is empty", self.quests("pets"))
         self.assertIn("No pets yet", self.quests("pet 1"))
+
+    def test_a_pet_is_released_for_good(self):
+        self.fund(0, pets=[self.pet(id=1, name="Tom"), self.pet(id=2, species="fox", name="Ember"),
+                           {"id": 3, "egg": True, "at": int(time.time())}])
+        self.assertIn("No pet 'Rex'", self.quests("release Rex"))
+        self.assertEqual(self.quests("release 3"), "#3 is still an egg. `/quests hatch 3` first.")
+        self.assertEqual(self.quests("release ember"),
+                         "You release Ember 🦊 into the wild. Goodbye, Ember!\n2 left in the pen.")
+        self.assertEqual([p["id"] for p in self.purse()["pets"]], [1, 3])
+        self.assertEqual(self.purse()["gold"], 0)  # nothing back for it
+        self.assertNotIn("Ember", self.quests("pets"))
+        self.assertIn("No pet '2'", self.quests("release 2"))
+        self.fund(0, pets=[self.pet(id=1, name="Tom")])
+        self.assertEqual(self.quests("release 1"), "You release Tom 🐱 into the wild. Goodbye, Tom!\nThe pen is empty.")
+        self.assertIn("The pen is empty", self.quests("pets"))
 
     def test_buy_once_equips_and_charges(self):
         self.fund(12)

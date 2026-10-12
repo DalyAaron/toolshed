@@ -138,6 +138,8 @@ const HATCHING = -1
 // says what came out: the card keeps the egg's details, and the toast waits,
 // until the shell gives
 const veiled = new Map<number, string>()
+// pets whose Release was pressed once: their card asks before letting them go
+const releasing = new Set<number>()
 
 // quest.py's store_base(): CLAUDE_QUESTS_DIR, else <config dir>/quests
 async function storeBase($: EngineInterface): Promise<string> {
@@ -850,13 +852,14 @@ function petCard($: EngineInterface, els: Els, pet: Pet, food: Food[], bar: read
   const pose = (t: number) => ({
     joy: pet.joy,
     hungry: pet.hungry,
+    shiny: pet.shiny,
     sincePetted: pettedAt.has(pet.id) ? t - seconds(pettedAt.get(pet.id)!) : -1,
     sinceHatched: hatched !== undefined && hatched !== HATCHING ? t - seconds(hatched) : -1,
   })
   const sprite =
     animated(els, `sprite-${pet.id}`, PET_COLUMNS, PET_ROWS, t => petFrame(pet.species, t, pose(t), pet.id)) ??
     (Svg && surface !== 'terminal' ? (
-      <Svg source={svg(petFrame(pet.species, 1, pose(1), pet.id))} alt={`${pet.name} the ${pet.kind.toLowerCase()}`} />
+      <Svg source={svg(petFrame(pet.species, 1, pose(1), pet.id))} alt={`${pet.name} the ${pet.shiny ? 'shiny ' : ''}${pet.kind.toLowerCase()}`} />
     ) : (
       <Text>{pet.emoji}</Text>
     ))
@@ -876,7 +879,9 @@ function petCard($: EngineInterface, els: Els, pet: Pet, food: Food[], bar: read
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         <Text wrap="truncate-end">
           <Text bold>{pet.name}</Text>
-          <Text dimColor>{` #${pet.id} · ${pet.kind} · `}</Text>
+          <Text dimColor>{` #${pet.id} · `}</Text>
+          {pet.shiny ? <Text color="warning">✨ shiny </Text> : null}
+          <Text dimColor>{`${pet.kind} · `}</Text>
           <Text color={TIER_COLOR[pet.rarity]} bold={pet.rarity === 'legendary'}>
             {pet.rarity}
           </Text>
@@ -913,7 +918,42 @@ function petCard($: EngineInterface, els: Els, pet: Pet, food: Food[], bar: read
             }}
           />
         )}
+        {releaseRow($, els, pet)}
       </Box>
+    </Box>
+  )
+}
+
+// Release takes two presses: the first asks, since a pet let go is gone.
+function releaseRow($: EngineInterface, els: Els, pet: Pet) {
+  const { Box, Text, Button } = els
+  const redraw = () => update($, armory, a => (a ? { ...a } : a))
+  if (!releasing.has(pet.id)) {
+    const ask = () => {
+      releasing.add(pet.id)
+      void redraw()
+    }
+    return (
+      <Box>
+        <Button key={`pet-${pet.id}-release`} label="Release" onPress={ask} />
+      </Box>
+    )
+  }
+  const keep = () => {
+    releasing.delete(pet.id)
+    void redraw()
+  }
+  const release = () => {
+    releasing.delete(pet.id)
+    pettedAt.delete(pet.id)
+    hatchedAt.delete(pet.id)
+    void press($, `release ${pet.id}`)
+  }
+  return (
+    <Box columnGap={1} flexWrap="wrap">
+      <Text color="warning">{`Let ${pet.name} go for good?`}</Text>
+      <Button key={`pet-${pet.id}-release-yes`} label="Release" variant="primary" onPress={release} />
+      <Button key={`pet-${pet.id}-release-keep`} label="Keep" onPress={keep} />
     </Box>
   )
 }

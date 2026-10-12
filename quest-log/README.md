@@ -198,7 +198,10 @@ It goes into your pen unhatched, and nothing says what's inside until you
 hatch it (`/quests hatch 1`, or click the egg in the overlay's Pets tab).
 One of ten pets comes out, some rarer than others: a rubber duck, a
 frog or a slime is common, an axolotl or a fox uncommon, a ghost rare and a
-dragon a one-in-fifty. Buy as many eggs as you like.
+dragon a one-in-fifty. Whatever the species, four eggs in ten hatch a
+**shiny** ✨: the same pet in other colours (a golden dog, a blue frog, a
+silver fox), marked shiny in the pen and twinkling in the overlay. Buy as
+many eggs as you like.
 
 ```
 /quests pets               the pen: each pet, its joy and how full it is
@@ -207,6 +210,7 @@ dragon a one-in-fifty. Buy as many eggs as you like.
 /quests buy kibble         food, a portion at a time: kibble, treat, feast
 /quests feed 1 treat       feed it (leave out the food for its favourite)
 /quests pet 1              free, and it cheers them up
+/quests release 1          let pet #1 go, for good (no gold back)
 ```
 
 Joy and fullness fade by the hour, and a hungry pet gets glum faster. Each
@@ -229,7 +233,8 @@ health potion. With the overlay on, the
 Pets tab draws each pet as a little pixel sprite that bobs, blinks, hops
 when it's happy and sags when it isn't, with hearts when you pet it. A new
 egg sits there until you click it; then it wobbles, cracks and splits
-open, and what came out is told as the shell gives.
+open, and what came out is told as the shell gives. Each pet's card has a
+Release button, which asks once more before the pet goes.
 
 Claude only earns gold. It never spends it, never tends your pets, and
 nothing in the shop changes how Claude works.
@@ -353,6 +358,16 @@ Local files only, nothing inside your repo. Uninstalling leaves the logs alone.
 for how it works and what's still open.
 
 ## Changelog
+
+### 1.8.0
+
+- **Shiny pets.** Four hatches in ten come out shiny ✨, whatever the
+  species: the same sprite recoloured, with a star that twinkles by its ear
+  in the overlay's Pets tab. The hatch says so, and the pen marks it. Pets
+  hatched before stay as they are.
+- **Release a pet.** `/quests release <n>`, or Release on its card in the
+  overlay (pressed twice, the second to confirm), lets a pet go for good.
+  No gold comes back, and an egg has to hatch first.
 
 ### 1.7.0
 

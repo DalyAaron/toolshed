@@ -399,14 +399,23 @@ miserable and starving, and one fed regularly holds steady.
 
 **One egg, not ten pets.** The shop sells a mystery egg and `hatch()` draws
 the species by weight (duck 16 down to dragon 2, of 100), so what you get is
-a surprise and a dragon is worth showing off. `CLAUDE_QUESTS_SEED` fixes the
-draw, for tests only. Food is the other consumable: bought a portion at a
+a surprise and a dragon is worth showing off. The same draw then rolls
+`shiny` (`SHINY_CHANCE`, 0.4), kept on the pet only when it's true, so pets
+from before shinies read as plain. A shiny is a recolour and not a species:
+`pets.ts` keeps one palette override per species (`SHINY`) laid over its
+sprite, so the shape, moves and rarity are the plain one's.
+`CLAUDE_QUESTS_SEED` fixes the draw, for tests only. Food is the other consumable: bought a portion at a
 time into `food`, used up by feeding.
 
 **Petting is free but tires.** Each pet adds 8 joy, but a second within 30
 seconds adds 2, so mashing the button isn't the way to a happy pet; feeding
 its favourite food is (+10 on top). Feeding a full pet is refused rather
 than wasted.
+
+**Releasing is for good.** `/quests release` drops the pet from `pets` with
+nothing back and no undo, so the overlay's Release button only asks
+(`releasing`, per card) and a second press, or Keep, decides. An egg can't
+be released: like the other verbs, it has to hatch first.
 
 **Potions are the third consumable.** Bought into `potions`, used up by
 `/quests drink`. Pets have no health of their own, so the health potion is

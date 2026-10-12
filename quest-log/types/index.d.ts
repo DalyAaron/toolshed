@@ -56,6 +56,8 @@ export type Pet = {
   emoji: string
   name: string
   rarity: 'common' | 'uncommon' | 'rare' | 'legendary'
+  // a recolour, rolled at the hatch
+  shiny?: boolean
   likes: string
   joy: number
   full: number

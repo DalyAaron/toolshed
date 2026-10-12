@@ -3,7 +3,7 @@ import type { On } from 'claude-code'
 
 import type { Armory, Pet, QuestLog } from '../types'
 import { HATCH_SECONDS, petFrame } from '../hooks/pets'
-import { base64, cells } from '../hooks/scene'
+import { NONE, base64, cells } from '../hooks/scene'
 
 // The overlay (hooks/overlay.tsx). Run with: claude plugin test quest-log
 
@@ -563,6 +563,33 @@ test('pets: each moves on a terminal, and is petted, fed and named from its card
   await pane.unmount()
 })
 
+test('pets: Release asks first, then lets the pet go; Keep thinks better of it', async ($, on) => {
+  const clock = mock.clock(on)
+  const { pressed, sell, toasts } = world(on, ON)
+  sell(PETS, 'You release Ember 🦊 into the wild. Goodbye, Ember!\n1 left in the pen.')
+  await $.session.start({ cwd: '/proj/sub', surface: 'desktop', isInteractive: true })
+  await clock.advance(0)
+
+  const pane = await $.ui.mount({ plugin: 'quest-log', surface: 'desktop', component: 'Pane', requestId: 'quests', props: PANE })
+  await pane.press({ key: 'tab-pets' })
+  expect((await pane.find({ key: 'pet-1-release' }))?.props.label).toBe('Release')
+  // the first press only asks, and asks on that card alone
+  await pane.press({ key: 'pet-1-release' })
+  expect(pressed).toEqual([])
+  expect(await pane.find({ text: 'Let Ember go for good?' })).toBeDefined()
+  expect(await pane.find({ key: 'pet-1-release' })).toBeUndefined()
+  expect(await pane.find({ key: 'pet-2-release' })).toBeDefined()
+  await pane.press({ key: 'pet-1-release-keep' })
+  expect(await pane.find({ text: 'Let Ember go for good?' })).toBeUndefined()
+  expect(pressed).toEqual([])
+  // asked again and meant it
+  await pane.press({ key: 'pet-1-release' })
+  await pane.press({ key: 'pet-1-release-yes' })
+  expect(pressed.map(p => p.command)).toEqual(['release 1'])
+  expect(toasts).toContain('You release Ember 🦊 into the wild. Goodbye, Ember!\n1 left in the pen.')
+  await pane.unmount()
+})
+
 const EGG: Pet = {
   id: 3, egg: true, species: 'egg', kind: 'Mystery egg', emoji: '🥚', name: 'Unhatched egg', rarity: 'common',
   likes: '', joy: 0, full: 0, mood: '', hungry: false, petted: 0,
@@ -642,6 +669,23 @@ test('pets: the hatch is an egg that cracks, a lid that flies, then the pet', ()
   expect(at(HATCH_SECONDS + 0.1)).not.toContain(shell)
   // without a hatch, or long after, it's just the dog
   expect(at(-1)).toEqual(Array.from(petFrame('dog', 5, pose, 2).px))
+})
+
+test('pets: a shiny one is the same sprite recoloured, with a twinkle now and then', () => {
+  const pose = { joy: 50, hungry: false, sincePetted: -1 }
+  const plain = (t: number) => Array.from(petFrame('dog', t, pose, 0).px)
+  const shiny = (t: number) => Array.from(petFrame('dog', t, { ...pose, shiny: true }, 0).px)
+  const star = 0xffd24a
+  expect(plain(1)).toContain(0xb5794a) // its brown coat
+  expect(shiny(1)).not.toContain(0xb5794a)
+  expect(shiny(1)).toContain(0xe8c070) // golden instead
+  // the same shape: every pixel filled in one is filled in the other
+  const shape = (px: number[]) => px.map(c => c !== NONE)
+  expect(shape(shiny(1))).toEqual(shape(plain(1)))
+  // the twinkle comes and goes; a plain pet never has one
+  expect(shiny(0.2)).toContain(star)
+  expect(shiny(1)).not.toContain(star)
+  expect(plain(0.2)).not.toContain(star)
 })
 
 test('pets: elsewhere a still picture; an empty pen offers an egg', async ($, on) => {

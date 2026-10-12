@@ -90,6 +90,12 @@ GLYPHS = {
 # Shown once, in the terminal, the first session after an update. Keep each
 # entry to a few lines: it interrupts someone who did not ask for it.
 UPGRADE_NOTES = {
+    "1.8.0": (
+        "/quests 1.8.0 — shiny pets ✨\n"
+        "Four eggs in ten now hatch a shiny: the same pet in other\n"
+        "colours, marked in /quests pets and twinkling in the overlay.\n"
+        "`/quests release <n>` lets a pet go, for good."
+    ),
     "1.7.0": (
         "/quests 1.7.0 — ten ranks now,\n"
         "Initiate to Loremaster at 15000 xp, so yours may have a new name.\n"
@@ -243,6 +249,9 @@ SPECIES = {
     "ghost": {"name": "Ghost", "emoji": "👻", "default": "Boo", "weight": 4, "likes": "treat"},
     "dragon": {"name": "Dragon", "emoji": "🐉", "default": "Smoulder", "weight": 2, "likes": "feast"},
 }
+# A hatch can come out shiny: the same pet, recoloured, whatever its species.
+SHINY_CHANCE = 0.4
+SHINY = "✨"
 RARITY = ((12, "common"), (8, "uncommon"), (4, "rare"), (0, "legendary"))
 FOOD = {
     "kibble": {"name": "Kibble", "emoji": "🥣", "price": 1, "full": 30, "joy": 2},
@@ -1672,10 +1681,12 @@ def find_pet(ref: str) -> "dict | None":
     return (named or (kind if len(kind) == 1 else [None]))[0]
 
 
-def hatch() -> str:
+def hatch() -> "tuple[str, bool]":
+    """What's in an egg: its species, and whether it's shiny."""
     seed = os.environ.get("CLAUDE_QUESTS_SEED")  # tests only: the same egg each time
     roll = random.Random(seed) if seed else random
-    return roll.choices(list(SPECIES), weights=[s["weight"] for s in SPECIES.values()])[0]
+    species = roll.choices(list(SPECIES), weights=[s["weight"] for s in SPECIES.values()])[0]
+    return species, roll.random() < SHINY_CHANCE
 
 
 # An egg goes into the pen unhatched, a pet with no species yet: what's inside
@@ -1707,13 +1718,14 @@ def cmd_hatch(ref: "str | None") -> str:
         egg = eggs[0]  # the one waiting longest
     else:
         return f"No eggs to hatch. A mystery egg is {EGG_PRICE} {GOLD} at /quests shop."
-    species = hatch()
+    species, shiny = hatch()
     spec = SPECIES[species]
     pid = egg["id"]
     save_pet({"id": pid, "species": species, "name": spec["default"],
-              "joy": 70, "full": 70, "at": int(time.time()), "petted": 0})
+              "joy": 70, "full": 70, "at": int(time.time()), "petted": 0, **({"shiny": True} if shiny else {})})
     article = "an" if spec["name"][0] in "AEIOU" else "a"
-    return (f"The egg cracks... it's {article} {spec['name']} {spec['emoji']} ({rarity(species)})! "
+    it = f"a {SHINY} shiny {spec['name']}" if shiny else f"{article} {spec['name']}"
+    return (f"The egg cracks... it's {it} {spec['emoji']} ({rarity(species)})! "
             f"Meet {spec['default']}, pet #{pid}. `/quests name {pid} <name>` to rename.")
 
 
@@ -1850,14 +1862,31 @@ def cmd_pet(ref: str) -> str:
     return f"You pet {pet['name']}. It {react}{more}. Now {mood(joy)}."
 
 
+def cmd_release(ref: str) -> str:
+    """A pet out of the pen for good: no gold back, and no undoing it."""
+    pet = find_pet(ref)
+    if not pet:
+        return f"No pet '{ref}'. {cmd_pets() or '`/quests pets` lists yours.'}"
+    if still_egg(pet):
+        return still_egg(pet)
+    purse = wallet()
+    purse["pets"] = [p for p in purse["pets"] if p["id"] != pet["id"]]
+    save_wallet(purse)
+    spec = SPECIES[pet["species"]]
+    left = len(purse["pets"])
+    return (f"You release {pet['name']} {spec['emoji']} into the wild. Goodbye, {pet['name']}!\n"
+            + (f"{left} left in the pen." if left else "The pen is empty."))
+
+
 def pet_data(pet: dict) -> dict:
     if pet.get("egg"):
         return {"id": pet["id"], "egg": True, "species": "egg", "kind": "Mystery egg", "emoji": "🥚",
                 "name": EGG_NAME, "rarity": "common", "likes": "", "joy": 0, "full": 0, "mood": "",
-                "hungry": False, "petted": 0}
+                "hungry": False, "petted": 0, "shiny": False}
     now_pet = settle(pet)
     spec = SPECIES[pet["species"]]
     return {"id": pet["id"], "species": pet["species"], "kind": spec["name"], "emoji": spec["emoji"],
+            "shiny": bool(pet.get("shiny")),
             "name": pet.get("name") or spec["default"], "rarity": rarity(pet["species"]),
             "likes": spec["likes"], "joy": now_pet["joy"], "full": now_pet["full"],
             "mood": mood(now_pet["joy"]), "hungry": now_pet["full"] < HUNGRY,
@@ -1877,7 +1906,7 @@ def render_pets() -> str:
             continue
         likes = FOOD[d["likes"]]
         out.append(spread(f"   #{d['id']} {d['emoji']} {fit(d['name'], PET_NAME_CELLS)}",
-                          f"{d['kind']} · {d['rarity']}"))
+                          (f"{SHINY} shiny " if d["shiny"] else "") + f"{d['kind']} · {d['rarity']}"))
         hearts = round(d["joy"] / 10)
         out.append(spread(f"      joy  {'♥' * hearts}{'♡' * (10 - hearts)}  {d['mood']}",
                           f"full {meter(d['full'] / 100)}" + (" hungry!" if d["hungry"] else "")))
@@ -1886,7 +1915,7 @@ def render_pets() -> str:
     if not purse["pets"]:
         out += [f"   The pen is empty. A mystery egg is {EGG_PRICE} {GOLD} at /quests shop:",
                 "   one of ten creatures hatches from it, a dragon if you're lucky.", ""]
-    out.append(rule("/quests pet <n> · feed <n> [food] · name <n> <name> · hatch <n>", "", top=False))
+    out.append(rule("/quests pet <n> · feed <n> [food] · name <n> <name> · release <n>", "", top=False))
     return "\n".join(out)
 
 
@@ -2395,13 +2424,15 @@ GOLD, XP AND THE SHOP
 PETS
   /quests buy egg       A mystery egg (1000 💰), into the pen unhatched.
   /quests hatch 2       Hatch egg #2: one of ten pets, some rarer than
-                        others. Buy as many as you like.
+                        others, and shiny (recoloured) 40% of the time.
+                        Buy as many as you like.
   /quests pets          The pen: each pet, its joy, how full it is.
   /quests name 1 Ember  Name pet #1 (or call it by its name after).
   /quests buy kibble    Food, a portion at a time: kibble, treat, feast.
   /quests feed 1 treat  Feed #1 (leave out the food for its favourite).
   /quests pet 1         Free, and it cheers them up. Joy and fullness fade
                         by the hour, faster when they're hungry.
+  /quests release 1     Let pet #1 go, for good: no gold back.
 
 POTIONS
   /quests buy health    🔴 Health potion (10 💰): every pet to full joy
@@ -2486,6 +2517,7 @@ USER_COMMANDS = re.compile(
       | name \s+ (?P<name_pet>\S+) \s+ (?P<name_text>.+)
       | feed \s+ (?P<feed>\S+) (?: \s+ (?P<feed_food>\S+) )?
       | pet \s+ (?P<pet>\S+)
+      | release \s+ (?P<release>\S+)
       | (?P<hatch>hatch) (?: \s+ (?P<hatch_what>\S+) )?
       | (?:drink|quaff|use) \s+ (?P<drink>\S+)
       | (?P<help>help)
@@ -2555,6 +2587,8 @@ def dispatch(raw: str) -> str:
             return cmd_feed(g["feed"], g["feed_food"])
         elif g["pet"]:
             return cmd_pet(g["pet"])
+        elif g["release"]:
+            return cmd_release(g["release"])
         elif g["drink"]:
             return cmd_drink(g["drink"])
         elif g["hatch"]:

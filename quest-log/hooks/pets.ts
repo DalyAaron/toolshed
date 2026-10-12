@@ -192,6 +192,21 @@ const SPRITES: Record<string, Sprite & { body: number }> = {
   },
 }
 
+// A shiny pet is the same sprite in other colours: its body (and the blink,
+// which is drawn in `body`) and whatever else changes; the rest is its own.
+const SHINY: Record<string, { body: number; palette: Record<string, number> }> = {
+  duck: { body: 0xf4a6d0, palette: { y: 0xf4a6d0, Y: 0xd66ba8 } },
+  frog: { body: 0x4aa8d8, palette: { g: 0x4aa8d8, G: 0x2a74a8, l: 0xa8e0f4 } },
+  slime: { body: 0xb07ad8, palette: { s: 0xb07ad8, S: 0x7a48a8, w: 0xf6ecff } },
+  cat: { body: 0xb8bcc8, palette: { o: 0xb8bcc8, O: 0x7c8090 } },
+  dog: { body: 0xe8c070, palette: { b: 0xe8c070, B: 0xa8783a } },
+  owl: { body: 0xe4e4ec, palette: { n: 0xe4e4ec, N: 0xa0a0b4 } },
+  axolotl: { body: 0xf2c45a, palette: { p: 0xf2c45a, P: 0xd0902a, k: 0x6a4a1a } },
+  fox: { body: 0xd8e4f0, palette: { o: 0xd8e4f0, O: 0x8ea4bc } },
+  ghost: { body: 0xe0c8ff, palette: { w: 0xe0c8ff, W: 0xa088d0 } },
+  dragon: { body: 0xe8b830, palette: { d: 0xe8b830, D: 0xa87418, r: 0x6ac8f0 } },
+}
+
 export const SPECIES = Object.keys(SPRITES)
 // the drawing: the sprite and room above it for a hop and for hearts
 export const PET_COLUMNS = 14
@@ -208,6 +223,8 @@ export type PetPose = {
   sincePetted: number
   // seconds since it hatched, -1 for long ago; for HATCH_SECONDS it's an egg
   sinceHatched?: number
+  // recoloured, with a twinkle now and then
+  shiny?: boolean
 }
 
 // Hatching: the egg sits and wobbles, cracks across its middle, its top flies
@@ -298,7 +315,11 @@ export function petFrame(species: string, t: number, pose: PetPose, seed = 0): C
     // out of the egg it's overjoyed, whatever its joy says
     return hatchFrame(s, t, () => petFrame(species, t, { ...pose, joy: 100, hungry: false, sinceHatched: -1 }, seed))
   }
-  const sprite = SPRITES[species] ?? SPRITES.slime!
+  const plain = SPRITES[species] ?? SPRITES.slime!
+  const recolour = pose.shiny ? SHINY[species] : undefined
+  const sprite = recolour
+    ? { ...plain, body: recolour.body, palette: { ...plain.palette, ...recolour.palette } }
+    : plain
   const c = new Canvas(PET_COLUMNS, PET_ROWS * 2)
   const happy = pose.joy >= 65
   const sad = pose.joy < 20 || pose.hungry
@@ -319,6 +340,16 @@ export function petFrame(species: string, t: number, pose: PetPose, seed = 0): C
       c.set(1 + x, top + y, colour)
     })
   })
+
+  // a shiny one twinkles: every few seconds a star by its ear, a dot that
+  // opens into a cross and closes again
+  const twinkle = (phase % 2.8) / 0.6
+  if (recolour && twinkle < 1) {
+    const [sx, sy] = [12, top - 1]
+    c.set(sx, sy, SPARKLE[0]!)
+    if (twinkle > 0.3 && twinkle < 0.7)
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) c.set(sx + dx, sy + dy, SPARKLE[1]!)
+  }
 
   // hearts, rising and spreading for two seconds after a pet
   if (pose.sincePetted >= 0 && pose.sincePetted < 2) {
